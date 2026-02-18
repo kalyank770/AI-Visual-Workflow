@@ -111,7 +111,8 @@ const App: React.FC = () => {
     
     setIsSimulating(true);
     setIsPaused(false);
-    setIsTelemetryCollapsed(false); // Auto-expand telemetry when starting
+    // Removed auto-expansion of telemetry to keep it collapsed by default per user request
+    // setIsTelemetryCollapsed(false); 
 
     let path: WorkflowStep[] = [
       WorkflowStep.UI_TO_LG,
