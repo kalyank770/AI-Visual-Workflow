@@ -29,6 +29,40 @@ const App: React.FC = () => {
   const [isPaused, setIsPaused] = useState(false);
   const [isTelemetryCollapsed, setIsTelemetryCollapsed] = useState(true);
   const [activePayloadDetail, setActivePayloadDetail] = useState<LogEntry | null>(null);
+  const [activeLogicPanel, setActiveLogicPanel] = useState<any | null>(null);
+
+  const logicPanels = [
+    {
+      id: 'rag-only',
+      title: 'Only RAG Flow Path',
+      description: 'Targeted for proprietary knowledge retrieval. Skips external MCP to maintain data gravity.',
+      path: 'UI → LG → RAG → VDB',
+      details: 'This architectural pattern prioritizes data sovereignty and internal knowledge base retrieval. It bypasses external tool execution (MCP) to ensure that sensitive data remains within the controlled environment. Ideal for answering questions based solely on indexed documentation.',
+      color: 'text-blue-400',
+      borderColor: 'border-blue-500/20',
+      bgColor: 'bg-blue-500/10'
+    },
+    {
+      id: 'mcp-only',
+      title: 'Only MCP Flow Path',
+      description: 'Targeted for real-time external tool orchestration via standardized interface.',
+      path: 'UI → LG → MCP → LG',
+      details: 'Focuses on action execution and real-time data fetching from external systems. This pattern bypasses the internal knowledge base (RAG) to reduce latency when only tool interaction is required, such as checking stock prices or controlling IoT devices.',
+      color: 'text-amber-400',
+      borderColor: 'border-amber-500/20',
+      bgColor: 'bg-amber-500/10'
+    },
+    {
+      id: 'hybrid',
+      title: 'Hybrid RAG + MCP Path',
+      description: 'The optimal agentic cycle. Combines retrieved context with real-time tool execution.',
+      path: 'UI → LG → RAG → MCP → LG',
+      details: 'This is the most comprehensive pattern, leveraging both internal knowledge (RAG) for context and external tools (MCP) for action. It enables complex reasoning where the agent first retrieves relevant policy or history, then uses that information to parameterize external API calls.',
+      color: 'text-emerald-400',
+      borderColor: 'border-emerald-500/20',
+      bgColor: 'bg-emerald-500/10'
+    }
+  ];
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const isPausedRef = useRef(isPaused);
@@ -388,6 +422,73 @@ const App: React.FC = () => {
             </div>
           )}
 
+          {activeLogicPanel && (
+            <div className="fixed inset-0 bg-[#020617]/70 backdrop-blur-2xl z-[100] flex items-center justify-center p-6 md:p-12 animate-in fade-in duration-300">
+              <div className={`w-full max-w-2xl bg-[#0b1120] border ${activeLogicPanel.borderColor} rounded-[2.5rem] shadow-[0_0_100px_rgba(0,0,0,0.5)] p-6 md:p-10 relative overflow-hidden`}>
+                <div className={`absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent ${activeLogicPanel.bgColor.replace('bg-', 'via-').replace('/10', '')} to-transparent opacity-80`} />
+                
+                <div className="flex justify-between items-start mb-8">
+                  <div>
+                    <h3 className="text-[10px] font-black uppercase tracking-[0.4em] text-slate-500">Logic Pattern Inspector</h3>
+                    <h2 className={`text-2xl font-black ${activeLogicPanel.color} mt-2`}>{activeLogicPanel.title}</h2>
+                  </div>
+                  <button 
+                    onClick={() => setActiveLogicPanel(null)}
+                    className="p-3 bg-white/5 hover:bg-white/10 rounded-2xl transition-all text-slate-400 hover:text-white group border border-white/5"
+                  >
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" className="group-hover:rotate-90 transition-transform">
+                      <path d="M18 6L6 18M6 6l12 12"/>
+                    </svg>
+                  </button>
+                </div>
+
+                <div className="space-y-6">
+                  <div className="p-5 bg-slate-950/40 rounded-2xl border border-white/5">
+                    <h4 className="text-[10px] font-black uppercase text-slate-500 mb-2 tracking-widest">Execution Path</h4>
+                    <p className="text-sm font-mono text-white/90">{activeLogicPanel.path}</p>
+                  </div>
+
+                  <div>
+                    <h4 className="text-[10px] font-black uppercase text-slate-500 mb-3 tracking-widest">Strategic Overview</h4>
+                    <p className="text-sm text-slate-300 leading-relaxed font-medium">
+                      {activeLogicPanel.details}
+                    </p>
+                  </div>
+
+                  <div className={`p-4 rounded-2xl ${activeLogicPanel.bgColor} border ${activeLogicPanel.borderColor}`}>
+                     <div className="flex items-start gap-3">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={activeLogicPanel.color}>
+                           <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+                        </svg>
+                        <div>
+                           <h4 className={`text-[11px] font-black uppercase tracking-widest mb-1 ${activeLogicPanel.color}`}>Performance Profile</h4>
+                           <p className="text-[11px] text-slate-400 leading-relaxed">
+                              Optimized for specific latency and data privacy requirements tailored to this architectural configuration.
+                           </p>
+                        </div>
+                     </div>
+                  </div>
+                </div>
+
+                <div className="mt-8 pt-6 border-t border-white/5 flex justify-between items-center">
+                   <p className="text-[10px] text-slate-600 font-bold uppercase tracking-widest">Pattern ID: {activeLogicPanel.id.toUpperCase()}</p>
+                   <button 
+                     onClick={() => {
+                        const prompt = activeLogicPanel.id === 'rag-only' ? "Perform internal knowledge retrieval via RAG only." : 
+                                       activeLogicPanel.id === 'mcp-only' ? "Execute external API calls via MCP tools only." :
+                                       "Complete hybrid synthesis using both RAG and MCP.";
+                        setActiveLogicPanel(null);
+                        runSimulation(prompt);
+                     }}
+                     className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest bg-white/5 hover:bg-white/10 text-white border border-white/10 transition-all`}
+                   >
+                      Initialize This Pattern
+                   </button>
+                </div>
+              </div>
+            </div>
+          )}
+
           {selectedNode && (
             <div className="absolute inset-y-0 right-0 w-[400px] bg-[#020617]/95 backdrop-blur-3xl border-l border-slate-800/60 shadow-2xl z-40 flex flex-col animate-in slide-in-from-right duration-500 ease-out rounded-l-[2rem]">
               <div className="p-10 flex flex-col h-full overflow-hidden">
@@ -518,21 +619,17 @@ const App: React.FC = () => {
               <div className="flex-[2] p-5 flex flex-col overflow-y-auto custom-scrollbar bg-slate-900/20">
                 <h4 className="text-[10px] text-slate-500 font-black uppercase tracking-[0.3em] mb-4">Architectural Logic Panels</h4>
                 <div className="space-y-4">
-                  <div className="p-3 bg-slate-950/40 rounded-xl border border-white/5">
-                    <h5 className="text-[9px] text-blue-400 font-black uppercase mb-1">Only RAG Flow Path</h5>
-                    <p className="text-[9px] text-slate-400 leading-normal font-mono mb-1">UI → LG → RAG → VDB</p>
-                    <p className="text-[8px] text-slate-500 leading-normal italic">Targeted for proprietary knowledge retrieval. Skips external MCP to maintain data gravity.</p>
-                  </div>
-                  <div className="p-3 bg-slate-950/40 rounded-xl border border-white/5">
-                    <h5 className="text-[9px] text-amber-400 font-black uppercase mb-1">Only MCP Flow Path</h5>
-                    <p className="text-[9px] text-slate-400 leading-normal font-mono mb-1">UI → LG → MCP → LG</p>
-                    <p className="text-[8px] text-slate-500 leading-normal italic">Targeted for real-time external tool orchestration via standardized interface.</p>
-                  </div>
-                  <div className="p-3 bg-slate-950/40 rounded-xl border border-white/5">
-                    <h5 className="text-[9px] text-emerald-400 font-black uppercase mb-1">Hybrid RAG + MCP Path</h5>
-                    <p className="text-[9px] text-slate-400 leading-normal font-mono mb-1">UI → LG → RAG → MCP → LG</p>
-                    <p className="text-[8px] text-slate-500 leading-normal italic">The optimal agentic cycle. Combines retrieved context with real-time tool execution.</p>
-                  </div>
+                  {logicPanels.map((panel) => (
+                    <div 
+                      key={panel.id}
+                      onClick={() => setActiveLogicPanel(panel)}
+                      className="p-3 bg-slate-950/40 rounded-xl border border-white/5 cursor-pointer hover:bg-slate-900/60 hover:border-white/10 transition-all select-none group"
+                    >
+                      <h5 className={`text-[9px] ${panel.color.replace('text-','text-')} font-black uppercase mb-1 group-hover:underline decoration-white/20 underline-offset-2`}>{panel.title}</h5>
+                      <p className="text-[9px] text-slate-400 leading-normal font-mono mb-1">{panel.path}</p>
+                      <p className="text-[8px] text-slate-500 leading-normal italic">{panel.description}</p>
+                    </div>
+                  ))}
                 </div>
               </div>
 

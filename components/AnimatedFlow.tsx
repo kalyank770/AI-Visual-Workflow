@@ -11,10 +11,40 @@ interface AnimatedFlowProps {
 }
 
 const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, onPayloadClick, isPaused, prompt }) => {
-  const [transform, setTransform] = useState({ x: 50, y: 50, scale: 0.75 });
+  // Center diagram in viewport: scale 0.6 fits height < 600px, x/y offsets center content (775, 465)
+  const [transform, setTransform] = useState({ x: 200, y: 30, scale: 0.6 });
   const isDragging = useRef(false);
   const lastMousePos = useRef({ x: 0, y: 0 });
   const svgRef = useRef<SVGSVGElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleResize = () => {
+      if (containerRef.current) {
+        const { clientWidth, clientHeight } = containerRef.current;
+        // Bounding box + margin: Width ~1500, Height ~750 to ensure fitting
+        const graphWidth = 1500; 
+        const graphHeight = 800; 
+        
+        const scaleX = clientWidth / graphWidth;
+        const scaleY = clientHeight / graphHeight;
+        const newScale = Math.max(0.4, Math.min(scaleX, scaleY, 0.85)); 
+        
+        // Center of graph content (approx 750, 465)
+        const newX = (clientWidth / 2) - (750 * newScale);
+        const newY = (clientHeight / 2) - (465 * newScale);
+
+        setTransform({ x: newX, y: newY, scale: newScale });
+      }
+    };
+
+    handleResize(); // Initial call
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+
+
 
   // Synchronize SVG animation clock with pause state
   useEffect(() => {
@@ -119,6 +149,7 @@ const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, o
 
   return (
     <div 
+      ref={containerRef}
       className="w-full h-full bg-[#030712] rounded-3xl border border-slate-800/40 relative overflow-hidden cursor-move shadow-inner"
       onWheel={handleWheel}
       onMouseDown={handleMouseDown}
@@ -273,7 +304,7 @@ const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, o
 
       <div className="absolute top-6 left-6 pointer-events-none">
         <h3 className="text-[10px] font-black text-blue-500 uppercase tracking-[0.4em]">AI Visual workflow</h3>
-        <p className="text-[9px] text-slate-500 font-mono">Sync Mode: Stage-by-Stage v3.3</p>
+        <p className="text-[9px] text-slate-500 font-mono">Stage-by-Stage visuals</p>
       </div>
     </div>
   );
