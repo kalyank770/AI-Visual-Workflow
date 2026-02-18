@@ -53,15 +53,15 @@ export const STEP_METADATA: Record<WorkflowStep, { label: string; details: strin
   },
   [WorkflowStep.UI_TO_LG]: { 
     label: 'Ingesting Prompt', 
-    details: 'Transmitting raw query packet for orchestration.', 
+    details: 'Raw Input: "{prompt}"', 
     sourceId: 'UI', 
     targetId: 'LG',
-    inputData: "What is the current NVIDIA stock price combined with internal risk docs?",
-    transformedData: { request_id: "REQ_102", type: "AGENTIC_SEARCH", priority: "HIGH" }
+    inputData: "{prompt}",
+    transformedData: { request_id: "REQ_GENERIC", type: "AGENTIC_SEARCH", priority: "HIGH" }
   },
   [WorkflowStep.LG_TO_LLM_PLAN]: { 
     label: 'Tasking Brain', 
-    details: 'Requesting high-level execution strategy and tool routing.', 
+    details: 'Transforming Raw Input → Structured Execution Plan Request', 
     sourceId: 'LG', 
     targetId: 'LLM',
     inputData: { nodes_visited: [], graph_state: "INITIALIZED" },
@@ -69,79 +69,79 @@ export const STEP_METADATA: Record<WorkflowStep, { label: string; details: strin
   },
   [WorkflowStep.LLM_TO_LG_PLAN]: { 
     label: 'Receiving Plan', 
-    details: 'Returning structured plan.', 
+    details: 'Received Plan: [Determine intent, Retrieve context, execute tools]', 
     sourceId: 'LLM', 
     targetId: 'LG',
     inputData: "PLANNING_PROMPT_REASONING",
-    transformedData: { steps: ["RAG_RETRIEVE", "MCP_MARKET_DATA", "SYNTHESIS"] }
+    transformedData: { steps: ["INTENT_RECOG", "CONTEXT_RETRIEVAL", "TOOL_EXECUTION"] }
   },
   [WorkflowStep.LG_TO_RAG]: { 
     label: 'RAG Pipeline', 
-    details: 'Initiating retrieval-augmented generation sequence.', 
+    details: 'Extracting Keywords: "{keywords}" → Generating Vector Query', 
     sourceId: 'LG', 
     targetId: 'RAG',
-    inputData: { topic: "NVIDIA risk documentation" },
-    transformedData: { task: "CONTEXT_RETRIEVAL", filter: { year: 2024 } }
+    inputData: { topic: "{topic}" },
+    transformedData: { task: "CONTEXT_RETRIEVAL", filter: { recent: true } }
   },
   [WorkflowStep.RAG_TO_VDB]: { 
     label: 'VDB Search', 
-    details: 'Executing vector similarity search on embedded documents.', 
+    details: 'Converting "{keywords}" → Vector Embedding [0.12, -0.98, 0.45...]', 
     sourceId: 'RAG', 
     targetId: 'VDB',
-    inputData: "Vector embedding for 'NVIDIA risk 2024'",
+    inputData: "Vector embedding for '{keywords}'",
     transformedData: { search_params: { top_k: 3, metric: "cosine" } }
   },
   [WorkflowStep.VDB_TO_RAG]: { 
     label: 'Data Retrieval', 
-    details: 'Returning semantic matches and relevant context chunks.', 
+    details: 'Found Matches: "{doc1}" (Score: 0.92) & "{doc2}"', 
     sourceId: 'VDB', 
     targetId: 'RAG',
     inputData: "DB_INDEX_SCAN",
-    transformedData: { documents: ["NVDA_Q4_RISK.pdf", "Internal_Audit_Report.docx"] }
+    transformedData: { documents: ["{doc1}", "{doc2}"] }
   },
   [WorkflowStep.RAG_TO_LG]: { 
     label: 'RAG Finalized', 
-    details: 'Merging retrieved context into global graph state.', 
+    details: 'Context Block Created: "Retrieved knowledge about {topic}..."', 
     sourceId: 'RAG', 
     targetId: 'LG',
-    inputData: ["NVDA_Q4_RISK.pdf", "Internal_Audit_Report.docx"],
+    inputData: ["{doc1}", "{doc2}"],
     transformedData: { context_tokens: 1250, integrity: "VERIFIED" }
   },
   [WorkflowStep.LG_TO_MCP]: { 
     label: 'MCP Call', 
-    details: 'Invoking dynamic toolset via Model Context Protocol.', 
+    details: 'Identifying Missing Data → Calling Tool: {tool_name}', 
     sourceId: 'LG', 
     targetId: 'MCP',
-    inputData: { tool_id: "google_search", query: "NVDA stock price" },
+    inputData: { tool_id: "{tool_id}", query: "{query}" },
     transformedData: { tool_request: "MCP_JSON_RPC_V1", method: "fetch" }
   },
   [WorkflowStep.MCP_TO_LG]: { 
     label: 'External Data', 
-    details: 'Ingesting real-time API response and reconciling state.', 
+    details: 'Tool Result: {tool_result} → Appending to Graph State', 
     sourceId: 'MCP', 
     targetId: 'LG',
     inputData: "EXTERNAL_API_STREAM",
-    transformedData: { status: "success", result: "$132.45 (+2.1%)" }
+    transformedData: { status: "success", result: "{tool_result}" }
   },
   [WorkflowStep.LG_TO_LLM_EVAL]: { 
     label: 'Evaluating', 
-    details: 'Providing unified context and tool data for final synthesis.', 
+    details: 'Aggregating: {User Query + Context + Tool Data} → Final Prompt', 
     sourceId: 'LG', 
     targetId: 'LLM',
-    inputData: { context: "Retrieved docs", tool_data: "$132.45" },
+    inputData: { context: "Retrieved docs", tool_data: "External Data" },
     transformedData: { command: "SYNTHESIZE_MARKDOWN", tone: "Professional" }
   },
   [WorkflowStep.LLM_TO_LG_EVAL]: { 
     label: 'Synthesized', 
-    details: 'Generating human-readable markdown response from agentic trace.', 
+    details: 'Generated Response: "{response_snippet}..."', 
     sourceId: 'LLM', 
     targetId: 'LG',
     inputData: "EVALUATION_HIDDEN_STATE",
-    transformedData: { markdown: "## Market Report\nNVIDIA is trading at...", confidence: 0.98 }
+    transformedData: { markdown: "## Summary\n{response_snippet}...", confidence: 0.98 }
   },
   [WorkflowStep.LG_TO_OUT]: { 
     label: 'Streaming', 
-    details: 'Routing verified response payload to user exit node.', 
+    details: 'Final Output: Streaming Markdown Bytes to UI', 
     sourceId: 'LG', 
     targetId: 'OUT',
     inputData: { result_buffer: "..." },

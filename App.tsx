@@ -77,28 +77,99 @@ const App: React.FC = () => {
     }
   }, [state.logs]);
 
-  // Helper to make static mock data feel prompt-relevant
-  const contextualizeData = (data: any, userPrompt: string): any => {
-    if (!data) return data;
-    const searchTerms = /NVIDIA|NVDA|stock price|stock/gi;
+  // Smarter contextualization based on prompt type
+  const getStepDetails = (step: WorkflowStep, meta: any, activePrompt: string) => {
+    let details = meta.details;
+    let inputData = meta.inputData;
+    let transformedData = meta.transformedData;
     
-    if (typeof data === 'string') {
-      return data.replace(searchTerms, userPrompt);
-    }
-    
-    if (Array.isArray(data)) {
-      return data.map(item => contextualizeData(item, userPrompt));
-    }
-    
-    if (typeof data === 'object') {
-      const result: any = {};
-      for (const key in data) {
-        result[key] = contextualizeData(data[key], userPrompt);
+    const isRagOnly = activePrompt.toLowerCase().includes("rag only");
+    const isMcpOnly = activePrompt.toLowerCase().includes("mcp tools only");
+    const isHybrid = !isRagOnly && !isMcpOnly;
+
+    // Helper to replace strict placeholders
+    const processTemplate = (obj: any, replacements: Record<string, string>): any => {
+      if (typeof obj === 'string') {
+        let res = obj;
+        for (const [key, val] of Object.entries(replacements)) {
+          // Use callback to avoid special replacement patterns in `val` (like $)
+          res = res.replace(new RegExp(`{${key}}`, 'g'), () => val);
+        }
+        return res;
       }
-      return result;
+      if (Array.isArray(obj)) return obj.map(o => processTemplate(o, replacements));
+      if (typeof obj === 'object' && obj !== null) {
+        const newObj: any = {};
+        for (const key in obj) newObj[key] = processTemplate(obj[key], replacements);
+        return newObj;
+      }
+      return obj;
+    };
+
+    // Define replacements based on mode
+    let replacements: Record<string, string> = {};
+
+    if (isRagOnly) {
+      replacements = {
+        prompt: activePrompt,
+        keywords: "Internal Knowledge",
+        topic: "Internal Knowledge Base",
+        doc1: "Internal_Docs_v2.pdf",
+        doc2: "Policy_2024.pdf",
+        response_snippet: "Based on internal documents...",
+      };
+      
+      // Specific overrides requested by user
+      if (step === WorkflowStep.UI_TO_LG) {
+        details = `Packet: { query: 'Internal Knowledge Retrieval' }`;
+      }
+      if (step === WorkflowStep.RAG_TO_VDB) {
+        details = `Packet: { embedding_target: 'Knowledge Base' }`;
+      }
+      if (step === WorkflowStep.VDB_TO_RAG) {
+        details = `Packet: { found: 'Internal_Docs_v2.pdf' }`;
+      }
+    } else if (isMcpOnly) {
+      replacements = {
+        prompt: activePrompt,
+        tool_name: "fetch_api",
+        tool_id: "live_stream_api",
+        query: "all",
+        tool_result: "Live Stream Data",
+        response_snippet: "Live data indicates...",
+      };
+      
+       // Specific overrides requested by user
+      if (step === WorkflowStep.UI_TO_LG) {
+        details = `Packet: { query: 'External API Execution' }`;
+      }
+      if (step === WorkflowStep.LG_TO_MCP) {
+        details = `Packet: { tool: 'fetch_api', args: 'all' }`;
+      }
+      if (step === WorkflowStep.MCP_TO_LG) {
+        details = `Packet: { status: 200, data: 'Live Stream' }`;
+      }
+    } else {
+      // Hybrid / Generic
+      replacements = {
+        prompt: activePrompt,
+        keywords: "Hybrid Synthesis",
+        topic: "Synthesis Target",
+        doc1: "Context_Doc_A.pdf",
+        doc2: "Context_Doc_B.pdf",
+        tool_name: "aggregator_tool",
+        tool_id: "agg_v1",
+        query: "hybrid_query",
+        tool_result: "{ 'hybrid': true, 'score': 0.99 }",
+        response_snippet: "Synthesizing both sources...",
+      };
     }
-    
-    return data;
+
+    return {
+      details: processTemplate(details, replacements),
+      inputData: processTemplate(inputData, replacements),
+      transformedData: processTemplate(transformedData, replacements)
+    };
   };
 
   const clearLogs = () => {
@@ -209,18 +280,19 @@ const App: React.FC = () => {
         const logId = `log_${Date.now()}_${step}`;
         
         // Dynamically contextualize input/output based on active user prompt
-        const dynamicInput = contextualizeData(meta.inputData || activePrompt, activePrompt);
-        const dynamicTransformed = contextualizeData(meta.transformedData, activePrompt);
+        // Use our new helper function which handles replacements
+        // Note: getStepDetails is defined in component scope
+        const { details, inputData, transformedData } = getStepDetails(step, meta, activePrompt);
 
         const newEntry: LogEntry = {
           id: logId,
           type: (meta.sourceId && meta.targetId) ? 'EXEC' : 'SYSTEM',
           message: meta.label,
-          details: meta.details,
+          details: details,
           source: meta.sourceId ? ARCHITECTURE_COMPONENTS[meta.sourceId]?.name : undefined,
           destination: meta.targetId ? ARCHITECTURE_COMPONENTS[meta.targetId]?.name : undefined,
-          inputData: dynamicInput,
-          transformedData: dynamicTransformed,
+          inputData: inputData,
+          transformedData: transformedData,
           timestamp: new Date().toLocaleTimeString()
         };
 
@@ -661,7 +733,7 @@ const App: React.FC = () => {
         </div>
 
         {(state.finalInput && state.finalOutput) && (
-          <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-2xl bg-[#080c14]/98 border border-emerald-500/20 backdrop-blur-3xl rounded-[3rem] p-10 shadow-[0_50px_100px_rgba(0,0,0,0.8)] z-[110] animate-in zoom-in-95 duration-500 max-h-[85vh] overflow-y-auto custom-scrollbar">
+          <div className="fixed top-1/2 right-10 -translate-y-1/2 w-full max-w-xl bg-[#080c14]/98 border border-emerald-500/20 backdrop-blur-3xl rounded-[2.5rem] p-8 shadow-[0_50px_100px_rgba(0,0,0,0.8)] z-[200] animate-in slide-in-from-right duration-500 max-h-[85vh] overflow-y-auto custom-scrollbar">
             <div className="flex items-center gap-4 mb-6 sticky top-0 bg-[#080c14]/40 py-2">
               <div className="w-3 h-3 rounded-full bg-emerald-500 animate-pulse shadow-[0_0_12px_rgba(16,185,129,0.5)]" />
               <span className="text-[12px] font-black uppercase tracking-[0.4em] text-emerald-400">Synthesis Complete</span>
