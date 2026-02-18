@@ -1,0 +1,5 @@
+{
+  "name": "CloudArchitect AI Workflow Visualizer",
+  "description": "An interactive architectural platform for designing and simulating agentic LLM workflows using LangGraph, MCP, and RAG architectures, featuring a Senior Architect AI assistant.",
+  "requestFramePermissions": []
+}
