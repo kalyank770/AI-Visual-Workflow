@@ -546,8 +546,8 @@ const App: React.FC = () => {
                   
                   <div className="flex justify-between items-start mb-8">
                     <div>
-                      <h3 className="text-[14px] font-black uppercase tracking-[0.4em] text-blue-400">Component Transaction Inspector</h3>
-                      <p className="text-[11px] text-slate-500 mt-2 font-mono flex items-center gap-2">
+                      <h3 className="text-base font-black uppercase tracking-[0.4em] text-blue-400">Component Transaction Inspector</h3>
+                      <p className="text-xs text-slate-500 mt-2 font-mono flex items-center gap-2">
                         <span className={`px-2 py-0.5 ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-slate-100 border-slate-200'} rounded border`}>{activePayloadDetail.source || 'SYSTEM'}</span>
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
                         <span className={`px-2 py-0.5 ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-slate-100 border-slate-200'} rounded border`}>{activePayloadDetail.destination || 'NODE'}</span>
@@ -567,9 +567,9 @@ const App: React.FC = () => {
                     <div className="space-y-3">
                       <div className="flex items-center gap-3">
                         <div className="w-1.5 h-1.5 rounded-full bg-slate-600" />
-                        <h4 className="text-[11px] font-black uppercase text-slate-500 tracking-widest">Ingress Packet</h4>
+                        <h4 className="text-xs font-black uppercase text-slate-500 tracking-widest">Ingress Packet</h4>
                       </div>
-                      <div className={`${isDarkMode ? 'bg-[#020617] border-white/5' : 'bg-slate-50 border-slate-200'} p-6 rounded-2xl border font-mono text-xs overflow-x-auto shadow-inner`}>
+                      <div className={`${isDarkMode ? 'bg-[#020617] border-white/5' : 'bg-slate-50 border-slate-200'} p-6 rounded-2xl border font-mono text-sm overflow-x-auto shadow-inner`}>
                         <pre className="text-slate-400 leading-relaxed">
                           {typeof activePayloadDetail.inputData === 'string' ? activePayloadDetail.inputData : JSON.stringify(activePayloadDetail.inputData, null, 2)}
                         </pre>
@@ -587,9 +587,9 @@ const App: React.FC = () => {
                     <div className="space-y-3">
                       <div className="flex items-center gap-3">
                         <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.4)]" />
-                        <h4 className="text-[11px] font-black uppercase text-blue-500 tracking-widest">Egress Result</h4>
+                        <h4 className="text-xs font-black uppercase text-blue-500 tracking-widest">Egress Result</h4>
                       </div>
-                      <div className={`${isDarkMode ? 'bg-[#020617]' : 'bg-slate-50'} p-6 rounded-2xl border border-blue-500/20 font-mono text-xs overflow-x-auto`}>
+                      <div className={`${isDarkMode ? 'bg-[#020617]' : 'bg-slate-50'} p-6 rounded-2xl border border-blue-500/20 font-mono text-sm overflow-x-auto`}>
                         <pre className="text-emerald-400 leading-relaxed">
                           {typeof activePayloadDetail.transformedData === 'string' ? activePayloadDetail.transformedData : JSON.stringify(activePayloadDetail.transformedData, null, 2)}
                         </pre>
@@ -600,9 +600,9 @@ const App: React.FC = () => {
                   <div className={`mt-8 flex items-center justify-between border-t ${isDarkMode ? 'border-white/5' : 'border-slate-200'} pt-6`}>
                     <div className="flex items-center gap-3">
                       <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
-                      <p className="text-[10px] text-slate-500 uppercase font-black tracking-widest">Trace Protocol: AGENT-v3</p>
+                      <p className="text-xs text-slate-500 uppercase font-black tracking-widest">Trace Protocol: AGENT-v3</p>
                     </div>
-                    <p className="text-[10px] text-slate-700 font-mono font-bold uppercase">{activePayloadDetail.timestamp}</p>
+                    <p className="text-xs text-slate-700 font-mono font-bold uppercase">{activePayloadDetail.timestamp}</p>
                   </div>
                </div>
             </div>
@@ -615,7 +615,7 @@ const App: React.FC = () => {
                 
                 <div className="flex justify-between items-start mb-8">
                   <div>
-                    <h3 className="text-[10px] font-black uppercase tracking-[0.4em] text-slate-500">Logic Pattern Inspector</h3>
+                    <h3 className="text-xs font-black uppercase tracking-[0.4em] text-slate-500">Logic Pattern Inspector</h3>
                     <h2 className={`text-2xl font-black ${activeLogicPanel.color} mt-2`}>{activeLogicPanel.title}</h2>
                   </div>
                   <button 
@@ -630,13 +630,13 @@ const App: React.FC = () => {
 
                 <div className="space-y-6">
                   <div className={`p-5 ${isDarkMode ? 'bg-slate-950/40 border-white/5' : 'bg-slate-50 border-slate-200'} rounded-2xl border`}>
-                    <h4 className="text-[10px] font-black uppercase text-slate-500 mb-2 tracking-widest">Execution Path</h4>
-                    <p className={`text-sm font-mono ${isDarkMode ? 'text-white/90' : 'text-slate-800'}`}>{activeLogicPanel.path}</p>
+                    <h4 className="text-xs font-black uppercase text-slate-500 mb-2 tracking-widest">Execution Path</h4>
+                    <p className={`text-base font-mono ${isDarkMode ? 'text-white/90' : 'text-slate-800'}`}>{activeLogicPanel.path}</p>
                   </div>
 
                   <div>
-                    <h4 className="text-[10px] font-black uppercase text-slate-500 mb-3 tracking-widest">Strategic Overview</h4>
-                    <p className={`text-sm ${isDarkMode ? 'text-slate-300' : 'text-slate-600'} leading-relaxed font-medium`}>
+                    <h4 className="text-xs font-black uppercase text-slate-500 mb-3 tracking-widest">Strategic Overview</h4>
+                    <p className={`text-base ${isDarkMode ? 'text-slate-300' : 'text-slate-600'} leading-relaxed font-medium`}>
                       {activeLogicPanel.details}
                     </p>
                   </div>
@@ -647,8 +647,8 @@ const App: React.FC = () => {
                            <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
                         </svg>
                         <div>
-                           <h4 className={`text-[11px] font-black uppercase tracking-widest mb-1 ${activeLogicPanel.color}`}>Performance Profile</h4>
-                           <p className="text-[11px] text-slate-400 leading-relaxed">
+                           <h4 className={`text-xs font-black uppercase tracking-widest mb-1 ${activeLogicPanel.color}`}>Performance Profile</h4>
+                           <p className="text-xs text-slate-400 leading-relaxed">
                               Optimized for specific latency and data privacy requirements tailored to this architectural configuration.
                            </p>
                         </div>
@@ -657,7 +657,7 @@ const App: React.FC = () => {
                 </div>
 
                 <div className={`mt-8 pt-6 border-t ${isDarkMode ? 'border-white/5' : 'border-slate-200'} flex justify-between items-center`}>
-                   <p className="text-[10px] text-slate-600 font-bold uppercase tracking-widest">Pattern ID: {activeLogicPanel.id.toUpperCase()}</p>
+                   <p className="text-xs text-slate-600 font-bold uppercase tracking-widest">Pattern ID: {activeLogicPanel.id.toUpperCase()}</p>
                    <button 
                      onClick={() => {
                         const prompt = activeLogicPanel.id === 'rag-only' ? "Perform internal knowledge retrieval via RAG only." : 
@@ -783,7 +783,7 @@ const App: React.FC = () => {
           {!isTelemetryCollapsed && (
             <div className={`flex-1 flex divide-x ${isDarkMode ? 'divide-slate-800/30' : 'divide-slate-200'} overflow-hidden`}>
               <div className="flex-[3] p-5 flex flex-col overflow-hidden">
-                <div className="flex-1 overflow-y-auto space-y-2.5 pr-3 custom-scrollbar font-mono text-[10px]" ref={scrollRef}>
+                <div className="flex-1 overflow-y-auto space-y-2.5 pr-3 custom-scrollbar font-mono text-xs" ref={scrollRef}>
                   {state.logs.map((log) => {
                     const isExec = log.type === 'EXEC';
                     return (
@@ -795,10 +795,10 @@ const App: React.FC = () => {
                            {isExec ? (
                              <div className="flex justify-between items-start pr-12">
                                <div className="flex flex-col gap-0.5">
-                                 <div className="text-blue-400 font-black uppercase tracking-widest text-[9px]">
+                                 <div className="text-blue-400 font-black uppercase tracking-widest text-[10px]">
                                    {log.source} → {log.destination}
                                  </div>
-                                 <div className="text-slate-500 leading-tight text-[11px]">
+                                 <div className="text-slate-500 leading-tight text-xs">
                                    {log.details}
                                  </div>
                                </div>
@@ -816,7 +816,7 @@ const App: React.FC = () => {
               </div>
               
               <div className={`flex-[2] p-5 flex flex-col overflow-y-auto custom-scrollbar ${isDarkMode ? 'bg-slate-900/20' : 'bg-slate-50'}`}>
-                <h4 className="text-[10px] text-slate-500 font-black uppercase tracking-[0.3em] mb-4">Architectural Logic Panels</h4>
+                <h4 className="text-xs text-slate-500 font-black uppercase tracking-[0.3em] mb-4">Architectural Logic Panels</h4>
                 <div className="space-y-4">
                   {logicPanels.map((panel) => (
                     <div 
@@ -824,9 +824,9 @@ const App: React.FC = () => {
                       onClick={() => setActiveLogicPanel(panel)}
                       className={`p-3 ${isDarkMode ? 'bg-slate-950/40 border-white/5 hover:bg-slate-900/60 hover:border-white/10' : 'bg-white border-slate-200 hover:bg-slate-50 hover:border-blue-200'} rounded-xl border cursor-pointer transition-all select-none group`}
                     >
-                      <h5 className={`text-[9px] ${panel.color.replace('text-','text-')} font-black uppercase mb-1 group-hover:underline decoration-white/20 underline-offset-2`}>{panel.title}</h5>
-                      <p className="text-[9px] text-slate-400 leading-normal font-mono mb-1">{panel.path}</p>
-                      <p className="text-[8px] text-slate-500 leading-normal italic">{panel.description}</p>
+                      <h5 className={`text-xs ${panel.color.replace('text-','text-')} font-black uppercase mb-1 group-hover:underline decoration-white/20 underline-offset-2`}>{panel.title}</h5>
+                      <p className="text-[10px] text-slate-400 leading-normal font-mono mb-1">{panel.path}</p>
+                      <p className="text-[10px] text-slate-500 leading-normal italic">{panel.description}</p>
                     </div>
                   ))}
                 </div>
@@ -835,15 +835,15 @@ const App: React.FC = () => {
               <div className="flex-1 p-5 flex flex-col justify-between">
                 <div className="space-y-4">
                   <div className="flex justify-between items-center">
-                    <span className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Node State</span>
-                    <span className="text-[11px] text-emerald-500 font-black uppercase tracking-widest">{state.currentStep === WorkflowStep.IDLE ? 'IDLE' : 'BUSY'}</span>
+                    <span className="text-xs text-slate-500 font-bold uppercase tracking-widest">Node State</span>
+                    <span className="text-xs text-emerald-500 font-black uppercase tracking-widest">{state.currentStep === WorkflowStep.IDLE ? 'IDLE' : 'BUSY'}</span>
                   </div>
                 </div>
                 
                 <div className="pt-2">
                   <div className="flex justify-between mb-1.5">
-                    <span className="text-[9px] text-slate-700 font-black uppercase">Progression</span>
-                    <span className="text-[9px] text-blue-500 font-black">
+                    <span className="text-[10px] text-slate-700 font-black uppercase">Progression</span>
+                    <span className="text-[10px] text-blue-500 font-black">
                       {Math.round((Object.values(WorkflowStep).indexOf(state.currentStep) / (Object.values(WorkflowStep).length - 1)) * 100)}%
                     </span>
                   </div>
