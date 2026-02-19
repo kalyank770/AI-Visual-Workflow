@@ -30,6 +30,7 @@ const App: React.FC = () => {
   const [isTelemetryCollapsed, setIsTelemetryCollapsed] = useState(true);
   const [activePayloadDetail, setActivePayloadDetail] = useState<LogEntry | null>(null);
   const [activeLogicPanel, setActiveLogicPanel] = useState<any | null>(null);
+  const [pathReasoning, setPathReasoning] = useState<string | null>(null);
 
   const logicPanels = [
     {
@@ -85,7 +86,15 @@ const App: React.FC = () => {
     
     const isRagOnly = activePrompt.toLowerCase().includes("rag only");
     const isMcpOnly = activePrompt.toLowerCase().includes("mcp tools only");
-    const isHybrid = !isRagOnly && !isMcpOnly;
+    // Direct logic (Keep in sync with runSimulation)
+    const promptLower = activePrompt.toLowerCase();
+    const isDirect = !isRagOnly && !isMcpOnly && (
+      /^[\d\s\+\-\*\/\(\)\.]+$/.test(activePrompt) || 
+      /^\d+[\+\-\*\/]\d+/.test(activePrompt.replace(/\s/g,'')) || 
+      ['hello', 'hi', 'hey', 'greetings'].some(s => promptLower.startsWith(s)) ||
+      (promptLower.split(' ').length < 6 && !promptLower.includes("ticket") && !promptLower.includes("status"))
+    );
+    const isHybrid = !isRagOnly && !isMcpOnly && !isDirect;
 
     // Helper to replace strict placeholders
     const processTemplate = (obj: any, replacements: Record<string, string>): any => {
@@ -149,6 +158,15 @@ const App: React.FC = () => {
       if (step === WorkflowStep.MCP_TO_LG) {
         details = `Packet: { status: 200, data: 'Live Stream' }`;
       }
+    } else if (isDirect) {
+      // Direct
+      replacements = {
+        prompt: activePrompt,
+        response_snippet: "Direct Answer Generated.",
+      };
+      if (step === WorkflowStep.UI_TO_LG) {
+        details = `Packet: { query: 'Direct LLM Execution' }`;
+      }
     } else {
       // Hybrid / Generic
       replacements = {
@@ -206,6 +224,7 @@ const App: React.FC = () => {
     setIsSimulating(false);
     setIsPaused(false);
     setActivePayloadDetail(null);
+    setPathReasoning(null);
   };
 
   const runSimulation = async (customPrompt?: string) => {
@@ -219,24 +238,58 @@ const App: React.FC = () => {
     // Removed auto-expansion of telemetry to keep it collapsed by default per user request
     // setIsTelemetryCollapsed(false); 
 
+
     let path: WorkflowStep[] = [
       WorkflowStep.UI_TO_LG,
       WorkflowStep.LG_TO_LLM_PLAN,
       WorkflowStep.LLM_TO_LG_PLAN,
     ];
 
-    const isRagOnly = activePrompt.toLowerCase().includes("rag only");
-    const isMcpOnly = activePrompt.toLowerCase().includes("mcp tools only");
+    const promptLower = activePrompt.toLowerCase();
+    
+    // Improved Logic Detection
+    // 1. Explicit overrides
+    const isRagOnly = promptLower.includes("rag only");
+    const isMcpOnly = promptLower.includes("mcp tools only");
+    
+    // 2. Direct simple query detection (Math, Greetings, Short General QA)
+    // Avoids RAG/MCP for trivial inputs
+    const isDirect = !isRagOnly && !isMcpOnly && (
+      /^[\d\s\+\-\*\/\(\)\.]+$/.test(activePrompt) || // Pure math
+      /^\d+[\+\-\*\/]\d+/.test(activePrompt.replace(/\s/g,'')) || // Embedded math
+      ['hello', 'hi', 'hey', 'greetings'].some(s => promptLower.startsWith(s)) ||
+      (promptLower.split(' ').length < 6 && !promptLower.includes("ticket") && !promptLower.includes("status")) // Short query
+    );
+
+    let reasoningText = "";
 
     if (isRagOnly) {
+      // RAG Only
       path = [...path, WorkflowStep.LG_TO_RAG, WorkflowStep.RAG_TO_VDB, WorkflowStep.VDB_TO_RAG, WorkflowStep.RAG_TO_LG];
+      reasoningText = "Route: RAG ONLY\n\n• User explicitly requested internal knowledge.\n• Accessing Vector DB for context.\n• Skipping external tools.";
     } else if (isMcpOnly) {
+      // MCP Only
       path = [...path, WorkflowStep.LG_TO_MCP, WorkflowStep.MCP_TO_LG];
+      reasoningText = "Route: MCP ONLY\n\n• User explicitly requested external tools.\n• Calling specific APIs.\n• Skipping internal knowledge base.";
+    } else if (isDirect) {
+      // Direct / Simple
+      // Remove planning steps for super simple queries? 
+      // Actually, let's keep planning but make it fast. 
+      // But path above ALREADY added Plan steps.
+      // So we just add EVAL steps. 
+      // Wait, for simple math, we might want to skip RAG/MCP steps which is what the `else` block did.
+      // So here we add NOTHING (no RAG, no MCP).
+      reasoningText = "Route: DIRECT LLM\n\n• Query classified as simple/direct.\n• No retrieval needed.\n• No external tools needed.\n• Resolving via LLM internal knowledge.";
     } else {
+      // Hybrid (Default for complex)
       path = [...path, WorkflowStep.LG_TO_RAG, WorkflowStep.RAG_TO_VDB, WorkflowStep.VDB_TO_RAG, WorkflowStep.RAG_TO_LG, WorkflowStep.LG_TO_MCP, WorkflowStep.MCP_TO_LG];
+      reasoningText = "Route: HYBRID (RAG + MCP)\n\n• Complex intent detected.\n• Retrieving context from Vector DB.\n• Executing external tools for real-time data.\n• Synthesizing full response.";
     }
 
+    setPathReasoning(reasoningText);
+
     path = [...path, WorkflowStep.LG_TO_LLM_EVAL, WorkflowStep.LLM_TO_LG_EVAL, WorkflowStep.LG_TO_OUT, WorkflowStep.COMPLETED];
+
 
     setState(prev => ({ 
       ...prev, 
@@ -410,8 +463,9 @@ const App: React.FC = () => {
       </header>
 
       <main className="flex-1 flex flex-col p-4 md:p-8 overflow-hidden relative">
-        <div className="flex-1 relative mb-4">
-          <AnimatedFlow 
+        <div className="flex-1 flex flex-row gap-6 mb-4 min-h-0">
+          <div className="w-3/4 relative rounded-[2.5rem] overflow-hidden border border-slate-800/20 bg-slate-900/5">
+            <AnimatedFlow 
             currentStep={state.currentStep} 
             onNodeClick={handleNodeClick} 
             onPayloadClick={(data) => {
@@ -561,63 +615,76 @@ const App: React.FC = () => {
             </div>
           )}
 
-          {selectedNode && (
-            <div className="absolute inset-y-0 right-0 w-[400px] bg-[#020617]/95 backdrop-blur-3xl border-l border-slate-800/60 shadow-2xl z-40 flex flex-col animate-in slide-in-from-right duration-500 ease-out rounded-l-[2rem]">
-              <div className="p-10 flex flex-col h-full overflow-hidden">
-                <header className="flex justify-between items-start mb-10 shrink-0">
-                  <div className="space-y-2">
-                    <h2 className="text-[10px] font-black uppercase tracking-[0.4em] text-blue-500/80">Component Specification</h2>
-                    <h3 className="text-2xl font-black text-white leading-tight">{ARCHITECTURE_COMPONENTS[selectedNode]?.name}</h3>
-                    <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">{ARCHITECTURE_COMPONENTS[selectedNode]?.role}</p>
+          </div>
+
+          <div className="w-1/4 flex flex-col h-full bg-slate-950/40 border border-slate-800/40 rounded-[2.5rem] overflow-hidden shadow-xl">
+            {selectedNode ? (
+              <div className="flex flex-col h-full animate-in fade-in duration-300 bg-[#020617]/80">
+                <div className="p-8 pb-4 shrink-0 flex justify-between items-start">
+                  <div>
+                    <h2 className="text-[9px] font-black uppercase tracking-[0.3em] text-blue-500/80 mb-2">Component</h2>
+                    <h3 className="text-xl font-black text-white leading-none">{ARCHITECTURE_COMPONENTS[selectedNode]?.name}</h3>
                   </div>
-                  <button 
-                    onClick={() => setSelectedNode(null)}
-                    className="p-2 hover:bg-white/5 rounded-xl transition-colors text-slate-500 hover:text-white"
-                  >
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                      <path d="M18 6L6 18M6 6l12 12"/>
-                    </svg>
+                  <button onClick={() => setSelectedNode(null)} className="p-2 hover:bg-white/10 rounded-xl transition-colors text-slate-500 hover:text-white">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 6L6 18M6 6l12 12"/></svg>
                   </button>
-                </header>
-
-                <div className="flex-1 space-y-10 overflow-y-auto pr-2 custom-scrollbar">
-                  <section>
-                    <h4 className="text-[10px] font-black uppercase text-slate-600 mb-3 tracking-widest">Logic Role</h4>
-                    <p className="text-[13px] text-slate-400 leading-relaxed">
-                      {ARCHITECTURE_COMPONENTS[selectedNode]?.description}
-                    </p>
-                  </section>
-
-                  <section>
-                    <h4 className="text-[10px] font-black uppercase text-slate-600 mb-4 tracking-widest">Deep-Dive Assessment</h4>
-                    <div className="bg-slate-900/40 rounded-3xl p-6 border border-slate-800/50 min-h-[160px] relative shadow-inner">
-                      {loadingInsight ? (
-                        <div className="flex items-center gap-4 text-slate-600 font-mono text-[11px] animate-pulse">
-                          <div className="w-4 h-4 border-2 border-slate-700 border-t-blue-500 animate-spin rounded-full" />
-                          <span>Generating architectural briefing...</span>
-                        </div>
-                      ) : (
-                        <div className="prose prose-invert prose-xs text-slate-300 leading-relaxed text-[13px] font-medium">
-                          {nodeInsight?.split('\n').map((line, i) => <p key={i} className="mb-3">{line}</p>)}
-                        </div>
-                      )}
-                    </div>
-                  </section>
-
-                  <section>
-                    <h4 className="text-[10px] font-black uppercase text-slate-600 mb-3 tracking-widest">Environment Stack</h4>
+                </div>
+                <div className="flex-1 overflow-y-auto px-8 pb-8 custom-scrollbar space-y-8">
+                  <div className="space-y-3">
+                    <h4 className="text-[9px] font-black uppercase text-slate-600 tracking-widest">Logic Role</h4>
+                    <p className="text-xs text-slate-400 leading-relaxed font-medium">{ARCHITECTURE_COMPONENTS[selectedNode]?.description}</p>
+                  </div>
+                  <div className="space-y-3">
+                    <h4 className="text-[9px] font-black uppercase text-slate-600 tracking-widest">Tech Stack</h4>
                     <div className="flex flex-wrap gap-2">
                       {ARCHITECTURE_COMPONENTS[selectedNode]?.techStack.map(s => (
-                        <span key={s} className="px-3 py-1 bg-blue-500/5 text-blue-400 border border-blue-500/10 rounded-lg text-[10px] font-black uppercase tracking-wider">
-                          {s}
-                        </span>
+                        <span key={s} className="px-2.5 py-1 bg-blue-500/10 text-blue-400 border border-blue-500/10 rounded-md text-[9px] font-black uppercase tracking-wider">{s}</span>
                       ))}
                     </div>
-                  </section>
+                  </div>
+                  <div className="space-y-3">
+                    <h4 className="text-[9px] font-black uppercase text-slate-600 tracking-widest">Insight</h4>
+                    <div className="bg-slate-950/60 p-4 rounded-xl border border-white/5 text-[10px] font-mono text-slate-400 leading-relaxed relative">
+                      {loadingInsight ? (
+                        <div className="flex items-center gap-2 animate-pulse"><div className="w-3 h-3 border-2 border-slate-600 border-t-blue-500 rounded-full animate-spin"/> Generating...</div>
+                      ) : (nodeInsight || "Select component to view details.")}
+                    </div>
+                  </div>
                 </div>
               </div>
-            </div>
-          )}
+            ) : (
+              <div className="flex flex-col h-full bg-slate-950/30">
+                <div className="p-8 pb-4 shrink-0">
+                  <h3 className="text-[9px] font-black uppercase tracking-[0.3em] text-slate-500 flex items-center gap-2">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"/> Path Analysis
+                  </h3>
+                </div>
+                <div className="flex-1 overflow-y-auto px-8 pb-8 custom-scrollbar">
+                  {pathReasoning ? (
+                    <div className="space-y-4 animate-in slide-in-from-right-4 fade-in duration-500">
+                      {pathReasoning.split('\n\n').map((block, i) => (
+                        <div key={i} className="bg-[#0b1221] p-4 rounded-xl border border-blue-500/10 shadow-sm relative group overflow-hidden">
+                          <div className="absolute top-0 left-0 w-0.5 h-full bg-gradient-to-b from-blue-500 to-transparent opacity-50 block"/>
+                          {block.split('\n').map((line, j) => (
+                            <div key={j} className={j===0 ? "font-bold text-slate-200 text-[11px] mb-2 uppercase tracking-wide" : "text-[10px] text-slate-400 pl-2 border-l border-slate-800 ml-0.5 py-0.5"}>
+                              {line}
+                            </div>
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="h-full flex flex-col items-center justify-center text-slate-700 opacity-60 space-y-4">
+                      <div className="w-12 h-12 rounded-full border border-slate-800 flex items-center justify-center bg-slate-900/50">
+                          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M9 18l6-6-6-6"/></svg>
+                      </div>
+                      <p className="text-[9px] uppercase font-black tracking-widest">Awaiting Input</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
         
         <div className={`transition-all duration-500 ease-in-out bg-slate-950/40 border border-slate-800/40 rounded-3xl flex flex-col overflow-hidden shadow-2xl ${isTelemetryCollapsed ? 'h-12' : 'h-80'}`}>
