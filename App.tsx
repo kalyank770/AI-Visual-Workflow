@@ -31,6 +31,7 @@ const App: React.FC = () => {
   const [activePayloadDetail, setActivePayloadDetail] = useState<LogEntry | null>(null);
   const [activeLogicPanel, setActiveLogicPanel] = useState<any | null>(null);
   const [pathReasoning, setPathReasoning] = useState<string | null>(null);
+  const [activeModelName, setActiveModelName] = useState<string>("Llama 3.3 70B");
   const [isDarkMode, setIsDarkMode] = useState(true);
 
   // Apply dark mode class to html element for global Tailwind support if needed
@@ -384,9 +385,11 @@ const App: React.FC = () => {
            }
         }
 
-        aiGeneratedOutput = await chatWithArchitect([
+        const aiResponse = await chatWithArchitect([
           { role: 'user', content: enhancedPrompt }
         ], systemPrompt);
+        aiGeneratedOutput = aiResponse.content;
+        setActiveModelName(aiResponse.model);
       }
 
       setState(prev => {
@@ -433,8 +436,9 @@ const App: React.FC = () => {
     setNodeInsight(null);
     const component = ARCHITECTURE_COMPONENTS[nodeId];
     if (component) {
-      const insight = await getArchitectInsight(component.name, `Component: ${nodeId}. Status: ${state.currentStep}. Task: ${prompt || 'Idle'}`);
-      setNodeInsight(insight || "Failed to retrieve architect's insight.");
+      const insightData = await getArchitectInsight(component.name, `Component: ${nodeId}. Status: ${state.currentStep || 'Idle'}. Task: ${prompt || 'None'}`);
+      setNodeInsight(insightData.content || "Failed to retrieve architect's insight.");
+      setActiveModelName(insightData.model);
     }
     setLoadingInsight(false);
   };
@@ -762,9 +766,9 @@ const App: React.FC = () => {
                 </div>
                 {/* Model Indicator Footer */}
                 <div className="px-8 py-3 border-t border-slate-200/5 dark:border-white/5 flex items-center justify-end gap-2">
-                  <div className={`w-1.5 h-1.5 rounded-full ${isSimulating ? 'bg-amber-500 animate-pulse' : 'bg-blue-500'}`}/>
+                  <div className={`w-1.5 h-1.5 rounded-full ${isSimulating ? 'bg-amber-500 animate-pulse' : (activeModelName.includes('Offline') ? 'bg-red-500' : 'bg-blue-500')}`}/>
                   <span className={`text-[9px] font-mono uppercase tracking-wider ${isDarkMode ? 'text-slate-500' : 'text-slate-400'}`}>
-                    Active Model: <span className="text-slate-400 dark:text-slate-300 font-bold">Llama 3.3 70B</span>
+                    Active Model: <span className="text-slate-400 dark:text-slate-300 font-bold">{activeModelName}</span>
                   </span>
                 </div>
               </div>

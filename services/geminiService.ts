@@ -18,7 +18,8 @@ async function callInternalModel(
   payloadMessages.push(...messages);
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 8000); 
+  // User Requested: If no response in "few seconds" (4s), switch models.
+  const timeoutId = setTimeout(() => controller.abort(), 4000); 
 
   try {
     const response = await fetch(INTERNAL_MODEL_ENDPOINT, {
@@ -132,7 +133,7 @@ const MOCK_INSIGHTS: Record<string, string> = {
 * **Agentic Role**: The "Communication Center". It formats the structured reasoning traces and raw data into a human-readable narrative.`,
 };
 
-export const getArchitectInsight = async (topic: string, context: string) => {
+export const getArchitectInsight = async (topic: string, context: string): Promise<{ content: string; model: string }> => {
   const prompt = `You are a Senior Cloud Architect. Explain the following architectural topic: "${topic}".
       Context of current workflow simulation: ${context}.
       Provide a deep-dive, technical but concise explanation focusing on scalability, security, and the "Agentic" nature of the component.
@@ -140,37 +141,41 @@ export const getArchitectInsight = async (topic: string, context: string) => {
 
   // 1. Try Internal Model
   try {
-     return await callInternalModel([{ role: 'user', content: prompt }]);
+     const content = await callInternalModel([{ role: 'user', content: prompt }]);
+     return { content, model: INTERNAL_MODEL_NAME };
   } catch (error) {
     console.warn("Internal Model Failed, attempting Gemini Fallback:", error);
     
     // 2. Try Gemini Fallback
     try {
-      return await callGeminiFallback(async (aiClient, model) => {
+      const content = await callGeminiFallback(async (aiClient, model) => {
          const response = await aiClient.models.generateContent({
           model: model,
           contents: prompt,
         });
         return response.text;
       });
+      return { content, model: "Gemini (Fallback)" };
     } catch (geminiError) {
       console.warn("All Models Failed (Falling back to cached insights):", geminiError);
-      return MOCK_INSIGHTS[topic] || 
+      const fallbackContent = MOCK_INSIGHTS[topic] || 
         `### ⚠️ Live Architect Unavailable\n\n**System Notice**: The Cloud Architect AI is offline.\n\nHowever, the system is fully operational. The **${topic}** component is functioning within normal parameters.\n\n* **Status**: Active\n* **Mode**: Fallback Simulation\n* **Recommendation**: Continue testing workflow logic.`;
+      return { content: fallbackContent, model: "Cached (Offline)" };
     }
   }
 };
 
-export const chatWithArchitect = async (history: { role: 'user' | 'assistant', content: string }[], systemPrompt?: string) => {
+export const chatWithArchitect = async (history: { role: 'user' | 'assistant', content: string }[], systemPrompt?: string): Promise<{ content: string; model: string }> => {
   // 1. Try Internal Model
   try {
-     return await callInternalModel(history as any, systemPrompt);
+     const content = await callInternalModel(history as any, systemPrompt);
+     return { content, model: INTERNAL_MODEL_NAME };
   } catch (error: any) {
     console.warn("Chat Error, attempting Gemini Fallback:", error);
     
     // 2. Try Gemini Fallback
     try {
-      return await callGeminiFallback(async (aiClient, model) => {
+      const content = await callGeminiFallback(async (aiClient, model) => {
         const chat = aiClient.chats.create({
           model: model,
           config: {
@@ -181,9 +186,13 @@ export const chatWithArchitect = async (history: { role: 'user' | 'assistant', c
         const response = await chat.sendMessage({ message: lastUserMessage });
         return response.text;
       });
+      return { content, model: "Gemini (Fallback)" };
     } catch (geminiError: any) {
        console.warn("All Chat Models Failed:", geminiError);
-       return `I am currently operating in **Offline Mode** due to connectivity issues with both Primary (Internal) and Secondary (Gemini) models. \n\nI can confirm that the workflow cycle you just ran was valid. The data flowed through the expected generic path for an **Agentic Workflow**: \n\n1. **Planning**: LLM decomposed the request.\n2. **Execution**: Tools (RAG/MCP) were called.\n3. **Synthesis**: Results were combined.\n\nError: ${error.message}`;
+       return { 
+         content: `I am currently operating in **Offline Mode** due to connectivity issues with both Primary (Internal) and Secondary (Gemini) models. \n\nI can confirm that the workflow cycle you just ran was valid. The data flowed through the expected generic path for an **Agentic Workflow**: \n\n1. **Planning**: LLM decomposed the request.\n2. **Execution**: Tools (RAG/MCP) were called.\n3. **Synthesis**: Results were combined.\n\nError: ${error.message}`,
+         model: "Cached (Offline)"
+       };
     }
   }
 };
