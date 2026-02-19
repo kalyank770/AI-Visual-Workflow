@@ -90,21 +90,68 @@ const App: React.FC = () => {
 
   // Smarter contextualization based on prompt type
   const getStepDetails = (step: WorkflowStep, meta: any, activePrompt: string) => {
-    let details = meta.details;
     let inputData = meta.inputData;
     let transformedData = meta.transformedData;
     
-    const isRagOnly = activePrompt.toLowerCase().includes("rag only");
-    const isMcpOnly = activePrompt.toLowerCase().includes("mcp tools only");
-    // Direct logic (Keep in sync with runSimulation)
+    // Determine the nature of the prompt
     const promptLower = activePrompt.toLowerCase();
+    const isRagOnly = promptLower.includes("rag only");
+    const isMcpOnly = promptLower.includes("mcp tools only");
+    // Direct logic
     const isDirect = !isRagOnly && !isMcpOnly && (
       /^[\d\s\+\-\*\/\(\)\.]+$/.test(activePrompt) || 
       /^\d+[\+\-\*\/]\d+/.test(activePrompt.replace(/\s/g,'')) || 
       ['hello', 'hi', 'hey', 'greetings'].some(s => promptLower.startsWith(s)) ||
       (promptLower.split(' ').length < 6 && !promptLower.includes("ticket") && !promptLower.includes("status"))
     );
-    const isHybrid = !isRagOnly && !isMcpOnly && !isDirect;
+
+    // Readable Transformation Logic
+    let simpleTransformation = "";
+    const shortPrompt = activePrompt.length > 20 ? activePrompt.substring(0, 20) + "..." : activePrompt;
+
+    switch (step) {
+      case WorkflowStep.UI_TO_LG:
+        simpleTransformation = `"${shortPrompt}" → { type: "user_request", content: "${shortPrompt}" }`;
+        break;
+      case WorkflowStep.LG_TO_LLM_PLAN:
+        simpleTransformation = `{ content: "${shortPrompt}" } → PromptTemplate("Analyze request: ${shortPrompt}")`;
+        break;
+      case WorkflowStep.LLM_TO_LG_PLAN:
+        simpleTransformation = `LLM Output → { plan: ["Identify Intent", "Retrieve Context", "Execute Tools"] }`;
+        break;
+      case WorkflowStep.LG_TO_RAG:
+        simpleTransformation = `Plan["Retrieve"] → { query: "keywords from ${shortPrompt}" }`;
+        break;
+      case WorkflowStep.RAG_TO_VDB:
+        simpleTransformation = `{ query: "keywords..." } → Vector_Embedding[0.82, -0.41, 0.19, ...]`;
+        break;
+      case WorkflowStep.VDB_TO_RAG:
+        simpleTransformation = `Vector Search → [ "Document_Chunk_A (92%)", "Document_Chunk_B (88%)" ]`;
+        break;
+      case WorkflowStep.RAG_TO_LG:
+        simpleTransformation = `[Docs] → Context_Window("...retrieved content...")`;
+        break;
+      case WorkflowStep.LG_TO_MCP:
+        simpleTransformation = `Plan["Execute"] → API_Call(tool="fetch_data", args={ query: "${shortPrompt}" })`;
+        break;
+      case WorkflowStep.MCP_TO_LG:
+        simpleTransformation = `API_Response(200) → { status: "success", data: "Live Stream Result" }`;
+        break;
+      case WorkflowStep.LG_TO_LLM_EVAL:
+        simpleTransformation = `{ context: "...", tool_data: "..." } → Final_Prompt("Synthesize answer for: ${shortPrompt}")`;
+        break;
+      case WorkflowStep.LLM_TO_LG_EVAL:
+        simpleTransformation = `Generation → Markdown("# Analysis\nBased on retrieved data...")`;
+        break;
+      case WorkflowStep.LG_TO_OUT:
+        simpleTransformation = `Markdown_Object → SSE_Stream(chunk_1, chunk_2, chunk_3)`;
+        break;
+      case WorkflowStep.COMPLETED:
+        simpleTransformation = `Cycle Complete. final_state = "WAITING"`;
+        break;
+      default:
+        simpleTransformation = meta.details;
+    }
 
     // Helper to replace strict placeholders
     const processTemplate = (obj: any, replacements: Record<string, string>): any => {
@@ -125,76 +172,47 @@ const App: React.FC = () => {
       return obj;
     };
 
-    // Define replacements based on mode
-    let replacements: Record<string, string> = {};
+    // Define replacements based on mode (Only needed for detailed payload inspectors now)
+    let replacements: Record<string, string> = {
+        prompt: activePrompt,
+        keywords: "Extracted Terms",
+        topic: "Subject Matter",
+        doc1: "Document_A.pdf",
+        doc2: "Document_B.pdf",
+        tool_name: "Generic_Tool",
+        tool_id: "tool_01",
+        query: "search_query",
+        tool_result: "success",
+        response_snippet: "Generated response...",
+    };
 
     if (isRagOnly) {
       replacements = {
-        prompt: activePrompt,
+        ...replacements,
         keywords: "Internal Knowledge",
-        topic: "Internal Knowledge Base",
+        topic: "Internal Policy",
         doc1: "Internal_Docs_v2.pdf",
         doc2: "Policy_2024.pdf",
         response_snippet: "Based on internal documents...",
       };
-      
-      // Specific overrides requested by user
-      if (step === WorkflowStep.UI_TO_LG) {
-        details = `Packet: { query: 'Internal Knowledge Retrieval' }`;
-      }
-      if (step === WorkflowStep.RAG_TO_VDB) {
-        details = `Packet: { embedding_target: 'Knowledge Base' }`;
-      }
-      if (step === WorkflowStep.VDB_TO_RAG) {
-        details = `Packet: { found: 'Internal_Docs_v2.pdf' }`;
-      }
     } else if (isMcpOnly) {
       replacements = {
-        prompt: activePrompt,
+        ...replacements,
         tool_name: "fetch_api",
         tool_id: "live_stream_api",
         query: "all",
         tool_result: "Live Stream Data",
         response_snippet: "Live data indicates...",
       };
-      
-       // Specific overrides requested by user
-      if (step === WorkflowStep.UI_TO_LG) {
-        details = `Packet: { query: 'External API Execution' }`;
-      }
-      if (step === WorkflowStep.LG_TO_MCP) {
-        details = `Packet: { tool: 'fetch_api', args: 'all' }`;
-      }
-      if (step === WorkflowStep.MCP_TO_LG) {
-        details = `Packet: { status: 200, data: 'Live Stream' }`;
-      }
     } else if (isDirect) {
-      // Direct
       replacements = {
-        prompt: activePrompt,
+        ...replacements,
         response_snippet: "Direct Answer Generated.",
-      };
-      if (step === WorkflowStep.UI_TO_LG) {
-        details = `Packet: { query: 'Direct LLM Execution' }`;
-      }
-    } else {
-      // Hybrid / Generic
-      replacements = {
-        prompt: activePrompt,
-        keywords: "Hybrid Synthesis",
-        topic: "Synthesis Target",
-        doc1: "Context_Doc_A.pdf",
-        doc2: "Context_Doc_B.pdf",
-        tool_name: "aggregator_tool",
-        tool_id: "agg_v1",
-        query: "hybrid_query",
-        tool_result: "{ 'hybrid': true, 'score': 0.99 }",
-        response_snippet: "Synthesizing both sources...",
       };
     }
 
     return {
-      details: processTemplate(details, replacements),
+      details: simpleTransformation, // Use our new readable string for the main log view
       inputData: processTemplate(inputData, replacements),
       transformedData: processTemplate(transformedData, replacements)
     };
