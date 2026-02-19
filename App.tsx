@@ -252,13 +252,12 @@ const App: React.FC = () => {
     const isRagOnly = promptLower.includes("rag only");
     const isMcpOnly = promptLower.includes("mcp tools only");
     
-    // 2. Direct simple query detection (Math, Greetings, Short General QA)
-    // Avoids RAG/MCP for trivial inputs
+    // 2. Direct simple query detection (Math, Greetings)
+    // Avoids RAG/MCP for trivial inputs like "2+2" or "Hi there"
     const isDirect = !isRagOnly && !isMcpOnly && (
       /^[\d\s\+\-\*\/\(\)\.]+$/.test(activePrompt) || // Pure math
       /^\d+[\+\-\*\/]\d+/.test(activePrompt.replace(/\s/g,'')) || // Embedded math
-      ['hello', 'hi', 'hey', 'greetings'].some(s => promptLower.startsWith(s)) ||
-      (promptLower.split(' ').length < 6 && !promptLower.includes("ticket") && !promptLower.includes("status")) // Short query
+      ['hello', 'hi', 'hey', 'greetings'].some(s => promptLower.startsWith(s))
     );
 
     let reasoningText = "";
@@ -324,11 +323,41 @@ const App: React.FC = () => {
       let aiGeneratedOutput = '';
       if (step === WorkflowStep.COMPLETED) {
         let systemPrompt = undefined;
+        let enhancedPrompt = activePrompt;
+        
         if (isDirect) {
-           systemPrompt = "You are a precise calculation and logic engine. meaningful, direct, and concise answers only. Do not provide explanations unless asked. Do not use conversational filler. Be brief.";
+           systemPrompt = "You are a precise calculation and logic engine. Meaningful, direct, and concise answers only. Do not provide explanations unless asked. Do not use conversational filler. Be brief.";
+        } else {
+           // Simulate Tool Data Injection for Demo
+           // In a real app, this data would come from the MCP tool execution in previous steps.
+           const toolData = [];
+           const promptLower = activePrompt.toLowerCase();
+           
+           if (promptLower.includes("stock") || promptLower.includes("price") || promptLower.includes("cap")) {
+             // Extract potential ticker (first word or capitalized word)
+             const potentialTicker = activePrompt.match(/\b[A-Z]{2,5}\b/)?.[0] || "Requested Asset";
+             toolData.push(`Tool [StockTicker]: ${potentialTicker} is currently trading at $${(Math.random() * 1000).toFixed(2)}. ${Math.random() > 0.5 ? 'Up' : 'Down'} ${(Math.random() * 5).toFixed(2)}% today.`);
+             toolData.push("Tool [MarketData]: Volume is high. Analyst rating: Buy.");
+           }
+           
+           if (promptLower.includes("weather") || promptLower.includes("temperature")) {
+             toolData.push("Tool [WeatherAPI]: Current conditions: 72°F (22°C), Sunny. Humidity: 45%. Wind: 10mph NW.");
+           }
+           
+           if (promptLower.includes("news") || promptLower.includes("latest")) {
+             toolData.push("Tool [NewsSearch]: Top headline: 'Market rally continues as AI adoption accelerates'. Source: Bloomberg.");
+             toolData.push(`Tool [NewsSearch]: Breaking news for ${activePrompt}: Quarterly earnings exceed expectations.`);
+           }
+
+           if (toolData.length > 0) {
+             enhancedPrompt = `${activePrompt}\n\n[SYSTEM: The following data was retrieved by the autonomous agent tools. Use it to answer the user query directly as if you knew it all along.]\n${toolData.join('\n')}`;
+             // Update system instruction for the "Architect" persona to be a helpful assistant using the provided data
+             systemPrompt = "You are an intelligent agent. You have just executed tools to gather information. Using the tool data provided in the context, answer the user's question directly and professionally. Do not mention 'As an AI' or 'I do not have access'. You HAVE the access via the tool data provided. Be confident.";
+           }
         }
+
         aiGeneratedOutput = await chatWithArchitect([
-          { role: 'user', content: activePrompt }
+          { role: 'user', content: enhancedPrompt }
         ], systemPrompt);
       }
 
@@ -398,7 +427,7 @@ const App: React.FC = () => {
             </svg>
           </div>
           <div>
-            <h1 className="text-xl font-black tracking-tight text-white uppercase italic leading-tight">Architect <span className="text-blue-500 font-light">Engine</span></h1>
+            <h1 className="text-xl font-black tracking-tight text-white uppercase italic leading-tight">AI Flow <span className="text-blue-500 font-light">Visualizer</span></h1>
             <div className="flex items-center gap-2 mt-1">
               <span className="text-[9px] font-black bg-blue-500/10 text-blue-500 px-2 py-0.5 rounded-full border border-blue-500/20 uppercase tracking-[0.1em]">Stateful Hub</span>
               {isSimulating && (
