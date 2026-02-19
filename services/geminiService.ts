@@ -143,13 +143,17 @@ export const getArchitectInsight = async (topic: string, context: string) => {
   }
 };
 
-export const chatWithArchitect = async (history: { role: 'user' | 'assistant', content: string }[]) => {
+export const chatWithArchitect = async (history: { role: 'user' | 'assistant', content: string }[], systemPrompt?: string) => {
   try {
      return await generateWithFallback(async (aiClient, model) => {
+        // Use the new Google AI SDK style for chat 
+        // Note: The structure is slightly different in the new SDK vs old, 
+        // but based on context, `aiClient.chats.create` seems to be the usage here.
+        // We just need to inject systemInstruction if supported.
         const chat = aiClient.chats.create({
           model: model,
           config: {
-            systemInstruction: 'You are a Senior Cloud Architect helping a developer understand Agentic Workflows. You are an expert in LangGraph, MCP, RAG, and LLM orchestration. Keep answers professional and technical.',
+            systemInstruction: systemPrompt || 'You are a Senior Cloud Architect. Provide clear, direct, and technical answers. Avoid unnecessary preamble. Focus on the solution.',
           },
         });
         const lastUserMessage = history[history.length - 1].content;

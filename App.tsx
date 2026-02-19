@@ -323,9 +323,13 @@ const App: React.FC = () => {
       
       let aiGeneratedOutput = '';
       if (step === WorkflowStep.COMPLETED) {
+        let systemPrompt = undefined;
+        if (isDirect) {
+           systemPrompt = "You are a precise calculation and logic engine. meaningful, direct, and concise answers only. Do not provide explanations unless asked. Do not use conversational filler. Be brief.";
+        }
         aiGeneratedOutput = await chatWithArchitect([
           { role: 'user', content: activePrompt }
-        ]);
+        ], systemPrompt);
       }
 
       setState(prev => {
