@@ -760,6 +760,13 @@ const App: React.FC = () => {
                     </div>
                   )}
                 </div>
+                {/* Model Indicator Footer */}
+                <div className="px-8 py-3 border-t border-slate-200/5 dark:border-white/5 flex items-center justify-end gap-2">
+                  <div className={`w-1.5 h-1.5 rounded-full ${isSimulating ? 'bg-amber-500 animate-pulse' : 'bg-blue-500'}`}/>
+                  <span className={`text-[9px] font-mono uppercase tracking-wider ${isDarkMode ? 'text-slate-500' : 'text-slate-400'}`}>
+                    Active Model: <span className="text-slate-400 dark:text-slate-300 font-bold">Llama 3.3 70B</span>
+                  </span>
+                </div>
               </div>
             )}
           </div>

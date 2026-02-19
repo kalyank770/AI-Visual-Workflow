@@ -1,45 +1,71 @@
 
 import { GoogleGenAI } from "@google/genai";
 
-// Standardize API Key retrieval for local (Vite) and platform environments
-// Returns an array of available keys to try in order of priority
+// --- 1. Internal Model Config (Primary) ---
+const INTERNAL_MODEL_ENDPOINT = "https://model-broker.aviator-model.bp.anthos.otxlab.net/v1/chat/completions";
+const INTERNAL_API_KEY = "sk-6wnDOKBJnJymbuSuX_bnmg";
+const INTERNAL_MODEL_NAME = "llama-3.3-70b";
+
+async function callInternalModel(
+  messages: { role: 'user' | 'assistant' | 'system', content: string }[],
+  systemInstruction?: string
+): Promise<string> {
+  
+  const payloadMessages = [];
+  if (systemInstruction) {
+    payloadMessages.push({ role: "system", content: systemInstruction });
+  }
+  payloadMessages.push(...messages);
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 8000); 
+
+  try {
+    const response = await fetch(INTERNAL_MODEL_ENDPOINT, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${INTERNAL_API_KEY}`
+      },
+      body: JSON.stringify({
+        model: INTERNAL_MODEL_NAME,
+        messages: payloadMessages
+      }),
+      signal: controller.signal
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      throw new Error(`Internal Model API Failed: ${response.status} ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    return data.choices?.[0]?.message?.content || "";
+  } catch (error) {
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+// --- 2. Gemini fallback Config (Secondary) ---
 const getApiKeys = () => {
   const keys: string[] = [];
-
-  // 1. Primary Key
   // @ts-ignore
-  if (typeof process !== 'undefined' && process.env && process.env.GEMINI_API_PRIMARY_KEY) {
-    keys.push(process.env.GEMINI_API_PRIMARY_KEY);
-  }
+  if (typeof process !== 'undefined' && process.env && process.env.GEMINI_API_PRIMARY_KEY) keys.push(process.env.GEMINI_API_PRIMARY_KEY);
   // @ts-ignore
-  if (import.meta?.env?.VITE_GEMINI_API_PRIMARY_KEY) {
-    keys.push(import.meta.env.VITE_GEMINI_API_PRIMARY_KEY);
-  }
-
-  // 2. Secondary/Fallback Key
+  if (import.meta?.env?.VITE_GEMINI_API_PRIMARY_KEY) keys.push(import.meta.env.VITE_GEMINI_API_PRIMARY_KEY);
   // @ts-ignore
-  if (typeof process !== 'undefined' && process.env && process.env.GEMINI_API_KEY) {
-    keys.push(process.env.GEMINI_API_KEY);
-  }
+  if (typeof process !== 'undefined' && process.env && process.env.GEMINI_API_KEY) keys.push(process.env.GEMINI_API_KEY);
   // @ts-ignore
-  if (typeof process !== 'undefined' && process.env && process.env.API_KEY) {
-    keys.push(process.env.API_KEY);
-  }
-  // @ts-ignore - Handle local Vite environment
-  if (import.meta?.env?.VITE_API_KEY) {
-    keys.push(import.meta.env.VITE_API_KEY);
-  }
-
-  // 3. Hardcoded Fallback (Last Resort)
+  if (import.meta?.env?.VITE_API_KEY) keys.push(import.meta.env.VITE_API_KEY);
   keys.push("AIzaSyDXNuT9e8BC_BvuOgAlpWFpPCLrLfSsbKo");
-
-  // Remove duplicates and empty strings
   return [...new Set(keys)].filter(k => k && k.trim() !== "");
 };
 
 const apiKeys = getApiKeys();
 
-// Model Cascade Strategy: Try high-quality first, fall back to faster/cheaper models if quota is exceeded
 const MODEL_CASCADE = [
   "gemini-3-pro-preview",
   "gemini-3-flash-preview",
@@ -48,44 +74,25 @@ const MODEL_CASCADE = [
   "gemini-2.0-flash-lite-001"
 ];
 
-async function generateWithFallback(
+async function callGeminiFallback(
   operation: (aiClient: GoogleGenAI, model: string) => Promise<string>
 ): Promise<string> {
   let lastError: any;
-
-  // Outer Loop: Iterate through available API Keys
   for (const key of apiKeys) {
     const currentAi = new GoogleGenAI({ apiKey: key });
-
-    // Inner Loop: Iterate through Models
     for (const model of MODEL_CASCADE) {
       try {
         return await operation(currentAi, model);
       } catch (error: any) {
         lastError = error;
-        // If error is NOT a quota/not-found issue (e.g. network), might not want to continue. 
-        // But for simplicity, we treat 429 (quota) and 404 (not found) as signals to try next.
         const isQuota = error.message?.includes("429") || error.message?.includes("Quota");
         const isNotFound = error.message?.includes("404") || error.message?.includes("not found");
-        const isAuthError = error.message?.includes("403") || error.message?.includes("API key");
-        
-        if (isQuota || isNotFound) {
-          console.warn(`Key ending in ...${key.slice(-4)} | Model ${model} failed (${isQuota ? 'Quota' : 'Not Found'}). Trying next model...`);
-          continue; // Try next model with same key
-        }
-
-        if (isAuthError) {
-           console.warn(`Key ending in ...${key.slice(-4)} is invalid or expired. Switching to next key...`);
-           break; // Break logic to try NEXT KEY
-        }
-
-        // For any other error (500, network, etc), just log and try next model
-        console.warn(`Model ${model} failed with unexpected error: ${error.message}. Trying next...`);
+        if (isQuota || isNotFound) continue;
         continue;
       }
     }
   }
-  throw lastError; // All keys and models failed
+  throw lastError; 
 }
 
 const MOCK_INSIGHTS: Record<string, string> = {
@@ -126,32 +133,44 @@ const MOCK_INSIGHTS: Record<string, string> = {
 };
 
 export const getArchitectInsight = async (topic: string, context: string) => {
+  const prompt = `You are a Senior Cloud Architect. Explain the following architectural topic: "${topic}".
+      Context of current workflow simulation: ${context}.
+      Provide a deep-dive, technical but concise explanation focusing on scalability, security, and the "Agentic" nature of the component.
+      Use bullet points where appropriate.`;
+
+  // 1. Try Internal Model
   try {
-    return await generateWithFallback(async (aiClient, model) => {
-       const response = await aiClient.models.generateContent({
-        model: model,
-        contents: `You are a Senior Cloud Architect. Explain the following architectural topic: "${topic}".
-        Context of current workflow simulation: ${context}.
-        Provide a deep-dive, technical but concise explanation focusing on scalability, security, and the "Agentic" nature of the component.
-        Use bullet points where appropriate.`,
-      });
-      return response.text;
-    });
+     return await callInternalModel([{ role: 'user', content: prompt }]);
   } catch (error) {
-    console.warn("All Gemini Models Failed (Falling back to cached insights):", error);
-    // Return a high-quality mock if ALL API attempts fail
-    return MOCK_INSIGHTS[topic] || 
-      `### ⚠️ Live Architect Unavailable\n\n**System Notice**: The Cloud Architect AI is offline due to high traffic (Quota Exceeded on all models).\n\nHowever, the system is fully operational. The **${topic}** component is functioning within normal parameters.\n\n* **Status**: Active\n* **Mode**: Fallback Simulation\n* **Recommendation**: Continue testing workflow logic.`;
+    console.warn("Internal Model Failed, attempting Gemini Fallback:", error);
+    
+    // 2. Try Gemini Fallback
+    try {
+      return await callGeminiFallback(async (aiClient, model) => {
+         const response = await aiClient.models.generateContent({
+          model: model,
+          contents: prompt,
+        });
+        return response.text;
+      });
+    } catch (geminiError) {
+      console.warn("All Models Failed (Falling back to cached insights):", geminiError);
+      return MOCK_INSIGHTS[topic] || 
+        `### ⚠️ Live Architect Unavailable\n\n**System Notice**: The Cloud Architect AI is offline.\n\nHowever, the system is fully operational. The **${topic}** component is functioning within normal parameters.\n\n* **Status**: Active\n* **Mode**: Fallback Simulation\n* **Recommendation**: Continue testing workflow logic.`;
+    }
   }
 };
 
 export const chatWithArchitect = async (history: { role: 'user' | 'assistant', content: string }[], systemPrompt?: string) => {
+  // 1. Try Internal Model
   try {
-     return await generateWithFallback(async (aiClient, model) => {
-        // Use the new Google AI SDK style for chat 
-        // Note: The structure is slightly different in the new SDK vs old, 
-        // but based on context, `aiClient.chats.create` seems to be the usage here.
-        // We just need to inject systemInstruction if supported.
+     return await callInternalModel(history as any, systemPrompt);
+  } catch (error: any) {
+    console.warn("Chat Error, attempting Gemini Fallback:", error);
+    
+    // 2. Try Gemini Fallback
+    try {
+      return await callGeminiFallback(async (aiClient, model) => {
         const chat = aiClient.chats.create({
           model: model,
           config: {
@@ -161,9 +180,10 @@ export const chatWithArchitect = async (history: { role: 'user' | 'assistant', c
         const lastUserMessage = history[history.length - 1].content;
         const response = await chat.sendMessage({ message: lastUserMessage });
         return response.text;
-     });
-  } catch (error) {
-    console.warn("Chat Error (Falling back to mock):", error);
-    return "I am currently operating in **Offline Mode** due to high API traffic across all available models. \n\nI can confirm that the workflow cycle you just ran was valid. The data flowed through the expected generic path for an **Agentic Workflow**: \n\n1. **Planning**: LLM decomposed the request.\n2. **Execution**: Tools (RAG/MCP) were called.\n3. **Synthesis**: Results were combined.\n\nPlease try again later for real-time analysis.";
+      });
+    } catch (geminiError: any) {
+       console.warn("All Chat Models Failed:", geminiError);
+       return `I am currently operating in **Offline Mode** due to connectivity issues with both Primary (Internal) and Secondary (Gemini) models. \n\nI can confirm that the workflow cycle you just ran was valid. The data flowed through the expected generic path for an **Agentic Workflow**: \n\n1. **Planning**: LLM decomposed the request.\n2. **Execution**: Tools (RAG/MCP) were called.\n3. **Synthesis**: Results were combined.\n\nError: ${error.message}`;
+    }
   }
 };
