@@ -8,9 +8,10 @@ interface AnimatedFlowProps {
   onPayloadClick: (payload: string) => void;
   isPaused: boolean;
   prompt?: string;
+  isDarkMode?: boolean;
 }
 
-const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, onPayloadClick, isPaused, prompt }) => {
+const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, onPayloadClick, isPaused, prompt, isDarkMode = true }) => {
   // Center diagram in viewport: scale 0.6 fits height < 600px, x/y offsets center content (775, 465)
   const [transform, setTransform] = useState({ x: 200, y: 30, scale: 0.6 });
   const isDragging = useRef(false);
@@ -150,7 +151,7 @@ const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, o
   return (
     <div 
       ref={containerRef}
-      className="w-full h-full bg-[#030712] rounded-3xl border border-slate-800/40 relative overflow-hidden cursor-move shadow-inner"
+      className={`w-full h-full ${isDarkMode ? 'bg-[#030712] border-slate-800/40' : 'bg-slate-50 border-slate-200'} rounded-3xl border relative overflow-hidden cursor-move shadow-inner transition-colors duration-500`}
       onWheel={handleWheel}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
@@ -161,7 +162,7 @@ const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, o
         <defs>
           {/* Directional Arrow Head Marker */}
           <marker id="arrow" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="4" markerHeight="4" orient="auto-start-reverse">
-            <path d="M 0 0 L 10 5 L 0 10 z" fill="white" />
+            <path d="M 0 0 L 10 5 L 0 10 z" fill={isDarkMode ? "white" : "#94a3b8"} />
           </marker>
           <marker id="arrow-active" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="4" markerHeight="4" orient="auto-start-reverse">
             <path d="M 0 0 L 10 5 L 0 10 z" fill="#3b82f6" />
@@ -187,7 +188,7 @@ const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, o
                 <path
                   d={trace.path}
                   fill="none"
-                  stroke={isActive ? "#3b82f6" : "white"}
+                  stroke={isActive ? "#3b82f6" : (isDarkMode ? "white" : "#94a3b8")}
                   strokeWidth={isActive ? "3" : "2"}
                   opacity={isActive ? "1" : "0.25"}
                   className="transition-all duration-300 ease-in-out"
@@ -199,7 +200,7 @@ const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, o
                 {isActive && (
                   <g>
                     {/* Primary Data Packet */}
-                    <circle r="7" fill="white" filter="url(#packetGlow)">
+                    <circle r="7" fill={isDarkMode ? "white" : "#2563eb"} filter="url(#packetGlow)">
                       <animateMotion 
                         dur={animDuration} 
                         repeatCount="indefinite" 
@@ -237,13 +238,15 @@ const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, o
                       />
                       <rect 
                         x="15" y="-14" width="90" height="20" rx="5" 
-                        fill="#0f172a" stroke="#3b82f6" strokeWidth="1.5" 
+                        fill={isDarkMode ? "#0f172a" : "#eff6ff"} 
+                        stroke="#3b82f6" strokeWidth="1.5" 
                         className="group-hover/packet:stroke-white group-hover/packet:fill-slate-800 transition-colors"
                         opacity="1" 
                       />
                       <text 
                         x="60" y="0.5" textAnchor="middle" 
-                        fill="#93c5fd" fontSize="8.5" fontWeight="900" 
+                        fill={isDarkMode ? "#93c5fd" : "#1e40af"} 
+                        fontSize="8.5" fontWeight="900" 
                         className="group-hover/packet:fill-white font-mono uppercase tracking-widest"
                       >
                         {activePayload}
@@ -272,23 +275,23 @@ const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, o
                   x="-90" y="-65" width="180" height="130" rx="28"
                   className={`transition-all duration-500 ${
                     isDestination 
-                    ? 'fill-slate-900 stroke-[5px]' 
+                    ? (isDarkMode ? 'fill-slate-900' : 'fill-white') + ' stroke-[5px]' 
                     : isSource 
-                      ? 'fill-slate-900 stroke-[3px]' 
-                      : 'fill-slate-800/80 stroke-slate-700/50 stroke-1'
-                  } group-hover:stroke-blue-400 group-hover:fill-slate-800`}
+                      ? (isDarkMode ? 'fill-slate-900' : 'fill-white') + ' stroke-[3px]' 
+                      : (isDarkMode ? 'fill-slate-800/80 stroke-slate-700/50' : 'fill-slate-50 stroke-slate-300') + ' stroke-1'
+                  } group-hover:stroke-blue-400 ${isDarkMode ? 'group-hover:fill-slate-800' : 'group-hover:fill-blue-50'}`}
                   stroke={isDestination || isSource ? node.color : 'currentColor'}
                   style={isDestination ? { filter: 'url(#nodeGlow)' } : {}}
                 />
                 
                 {/* Node Icon and Labels */}
-                <text y="-20" textAnchor="middle" className="fill-white text-3xl select-none pointer-events-none">
+                <text y="-20" textAnchor="middle" className={`${isDarkMode ? 'fill-white' : 'fill-slate-800'} text-3xl select-none pointer-events-none`}>
                   {node.icon}
                 </text>
-                <text y="15" textAnchor="middle" className="fill-white font-black text-[14px] uppercase tracking-wider select-none pointer-events-none">
+                <text y="15" textAnchor="middle" className={`${isDarkMode ? 'fill-white' : 'fill-slate-900'} font-black text-[14px] uppercase tracking-wider select-none pointer-events-none`}>
                   {node.id}
                 </text>
-                <text y="38" textAnchor="middle" className="fill-slate-400 text-[10px] font-bold uppercase tracking-[0.2em] select-none pointer-events-none">
+                <text y="38" textAnchor="middle" className={`${isDarkMode ? 'fill-slate-400' : 'fill-slate-500'} text-[10px] font-bold uppercase tracking-[0.2em] select-none pointer-events-none`}>
                   {node.label}
                 </text>
 
@@ -297,6 +300,7 @@ const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, o
                   <circle r="100" fill="none" stroke={node.color} strokeWidth="2" className="animate-ping opacity-10" />
                 )}
               </g>
+
             );
           })}
         </g>

@@ -31,6 +31,16 @@ const App: React.FC = () => {
   const [activePayloadDetail, setActivePayloadDetail] = useState<LogEntry | null>(null);
   const [activeLogicPanel, setActiveLogicPanel] = useState<any | null>(null);
   const [pathReasoning, setPathReasoning] = useState<string | null>(null);
+  const [isDarkMode, setIsDarkMode] = useState(true);
+
+  // Apply dark mode class to html element for global Tailwind support if needed
+  useEffect(() => {
+    if (isDarkMode) {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+  }, [isDarkMode]);
 
   const logicPanels = [
     {
@@ -418,8 +428,8 @@ const App: React.FC = () => {
   ];
 
   return (
-    <div className="flex flex-col h-screen bg-[#020617] text-slate-200 overflow-hidden font-sans selection:bg-blue-500/30">
-      <header className="flex justify-between items-center px-10 py-6 border-b border-slate-800/50 bg-[#080c14]/90 backdrop-blur-2xl shrink-0 z-20">
+    <div className={`flex flex-col h-screen ${isDarkMode ? 'bg-[#020617] text-slate-200' : 'bg-slate-50 text-slate-700'} overflow-hidden font-sans selection:bg-blue-500/30`}>
+      <header className={`flex justify-between items-center px-10 py-6 border-b ${isDarkMode ? 'border-slate-800/50 bg-[#080c14]/90' : 'border-slate-200 bg-white/90'} backdrop-blur-2xl shrink-0 z-20`}>
         <div className="flex items-center gap-5">
           <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-700 flex items-center justify-center shadow-[0_0_20px_rgba(37,99,235,0.15)] border border-white/5 group">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" className="group-hover:scale-110 transition-transform">
@@ -427,9 +437,9 @@ const App: React.FC = () => {
             </svg>
           </div>
           <div>
-            <h1 className="text-xl font-black tracking-tight text-white uppercase italic leading-tight">AI Flow <span className="text-blue-500 font-light">Visualizer</span></h1>
+            <h1 className={`text-xl font-black tracking-tight ${isDarkMode ? 'text-white' : 'text-slate-900'} uppercase italic leading-tight`}>AI Flow <span className="text-blue-500 font-light">Visualizer</span></h1>
             <div className="flex items-center gap-2 mt-1">
-              <span className="text-[9px] font-black bg-blue-500/10 text-blue-500 px-2 py-0.5 rounded-full border border-blue-500/20 uppercase tracking-[0.1em]">Stateful Hub</span>
+              <span className={`text-[9px] font-black ${isDarkMode ? 'bg-blue-500/10 text-blue-500 border-blue-500/20' : 'bg-blue-100 text-blue-600 border-blue-200'} px-2 py-0.5 rounded-full border uppercase tracking-[0.1em]`}>Stateful Hub</span>
               {isSimulating && (
                 <div className="flex items-center gap-1.5 px-2 py-0.5 bg-emerald-500/10 border border-emerald-500/20 rounded-full animate-pulse">
                   <div className="w-1 h-1 bg-emerald-500 rounded-full" />
@@ -447,7 +457,7 @@ const App: React.FC = () => {
                 key={s.label}
                 onClick={() => runSimulation(s.prompt)}
                 disabled={isSimulating}
-                className="px-3 py-1.5 rounded-lg border border-slate-800 bg-slate-900/40 text-[9px] font-bold uppercase tracking-widest text-slate-400 hover:text-white hover:border-blue-500/50 transition-all disabled:opacity-50"
+                className={`px-3 py-1.5 rounded-lg border ${isDarkMode ? 'border-slate-800 bg-slate-900/40 text-slate-400 hover:text-white' : 'border-slate-200 bg-white text-slate-500 hover:text-slate-900 hover:border-slate-300'} text-[9px] font-bold uppercase tracking-widest hover:border-blue-500/50 transition-all disabled:opacity-50`}
               >
                 {s.label}
               </button>
@@ -461,14 +471,14 @@ const App: React.FC = () => {
             onChange={(e) => setPrompt(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && runSimulation()}
             placeholder="Describe your agentic objective..."
-            className="bg-slate-900/60 border border-slate-800/80 px-6 py-3 rounded-2xl w-[300px] text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/30 transition-all shadow-lg placeholder:text-slate-700 disabled:opacity-50"
+            className={`${isDarkMode ? 'bg-slate-900/60 border-slate-800/80 placeholder:text-slate-700 text-slate-200' : 'bg-white border-slate-200 placeholder:text-slate-400 text-slate-800'} border px-6 py-3 rounded-2xl w-[300px] text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/30 transition-all shadow-lg disabled:opacity-50`}
           />
           
           <div className="flex gap-2">
             {isSimulating ? (
               <button
                 onClick={() => setIsPaused(!isPaused)}
-                className="px-6 py-3 rounded-2xl font-black text-[10px] bg-slate-800 text-white uppercase tracking-[0.2em] shadow-xl hover:bg-slate-700 transition-all active:scale-95"
+                className={`px-6 py-3 rounded-2xl font-black text-[10px] ${isDarkMode ? 'bg-slate-800 text-white hover:bg-slate-700' : 'bg-slate-200 text-slate-700 hover:bg-slate-300'} uppercase tracking-[0.2em] shadow-xl transition-all active:scale-95`}
               >
                 {isPaused ? 'Resume' : 'Pause'}
               </button>
@@ -484,12 +494,28 @@ const App: React.FC = () => {
             
             <button 
               onClick={resetSimulation}
-              className="px-4 py-3 rounded-2xl border border-slate-800 hover:bg-slate-800 transition-colors"
+              className={`px-4 py-3 rounded-2xl border ${isDarkMode ? 'border-slate-800 hover:bg-slate-800' : 'border-slate-200 hover:bg-slate-100 text-slate-600'} transition-colors`}
               title="Reset Simulation"
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                 <path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
               </svg>
+            </button>
+
+            <button 
+              onClick={() => setIsDarkMode(!isDarkMode)}
+              className={`px-4 py-3 rounded-2xl border ${isDarkMode ? 'border-slate-800 hover:bg-slate-800 text-slate-400 hover:text-white' : 'border-slate-200 hover:bg-slate-100 text-slate-600 hover:text-slate-900'} transition-colors`}
+              title={isDarkMode ? "Switch to Light Mode" : "Switch to Dark Mode"}
+            >
+              {isDarkMode ? (
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+                </svg>
+              ) : (
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+                </svg>
+              )}
             </button>
           </div>
         </div>
@@ -497,7 +523,7 @@ const App: React.FC = () => {
 
       <main className="flex-1 flex flex-col p-4 md:p-8 overflow-hidden relative">
         <div className="flex-1 flex flex-row gap-6 mb-4 min-h-0">
-          <div className="w-3/4 relative rounded-[2.5rem] overflow-hidden border border-slate-800/20 bg-slate-900/5">
+          <div className={`w-3/4 relative rounded-[2.5rem] overflow-hidden border ${isDarkMode ? 'border-slate-800/20 bg-slate-900/5' : 'border-slate-200 bg-white/50'}`}>
             <AnimatedFlow 
             currentStep={state.currentStep} 
             onNodeClick={handleNodeClick} 
@@ -510,25 +536,26 @@ const App: React.FC = () => {
             }}
             isPaused={isPaused} 
             prompt={prompt} 
+            isDarkMode={isDarkMode}
           />
           
           {activePayloadDetail && (
-            <div className="fixed inset-0 bg-[#020617]/70 backdrop-blur-2xl z-[100] flex items-center justify-center p-6 md:p-12 animate-in fade-in duration-300">
-               <div className="w-full max-w-2xl bg-[#0b1120] border border-blue-500/30 rounded-[2.5rem] shadow-[0_0_100px_rgba(37,99,235,0.2)] p-6 md:p-10 relative overflow-hidden">
+            <div className={`fixed inset-0 ${isDarkMode ? 'bg-[#020617]/70' : 'bg-slate-200/50'} backdrop-blur-2xl z-[100] flex items-center justify-center p-6 md:p-12 animate-in fade-in duration-300`}>
+               <div className={`w-full max-w-2xl ${isDarkMode ? 'bg-[#0b1120]' : 'bg-white'} border border-blue-500/30 rounded-[2.5rem] shadow-[0_0_100px_rgba(37,99,235,0.2)] p-6 md:p-10 relative overflow-hidden`}>
                   <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-600 via-indigo-500 to-emerald-500" />
                   
                   <div className="flex justify-between items-start mb-8">
                     <div>
                       <h3 className="text-[14px] font-black uppercase tracking-[0.4em] text-blue-400">Component Transaction Inspector</h3>
                       <p className="text-[11px] text-slate-500 mt-2 font-mono flex items-center gap-2">
-                        <span className="px-2 py-0.5 bg-slate-900 rounded border border-slate-800">{activePayloadDetail.source || 'SYSTEM'}</span>
+                        <span className={`px-2 py-0.5 ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-slate-100 border-slate-200'} rounded border`}>{activePayloadDetail.source || 'SYSTEM'}</span>
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
-                        <span className="px-2 py-0.5 bg-slate-900 rounded border border-slate-800">{activePayloadDetail.destination || 'NODE'}</span>
+                        <span className={`px-2 py-0.5 ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-slate-100 border-slate-200'} rounded border`}>{activePayloadDetail.destination || 'NODE'}</span>
                       </p>
                     </div>
                     <button 
                       onClick={() => setActivePayloadDetail(null)}
-                      className="p-3 bg-white/5 hover:bg-white/10 rounded-2xl transition-all text-slate-400 hover:text-white group border border-white/5"
+                      className={`p-3 ${isDarkMode ? 'bg-white/5 hover:bg-white/10 hover:text-white' : 'bg-slate-100 hover:bg-slate-200 hover:text-slate-900'} rounded-2xl transition-all text-slate-400 group border border-transparent`}
                     >
                       <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" className="group-hover:rotate-90 transition-transform">
                         <path d="M18 6L6 18M6 6l12 12"/>
@@ -542,7 +569,7 @@ const App: React.FC = () => {
                         <div className="w-1.5 h-1.5 rounded-full bg-slate-600" />
                         <h4 className="text-[11px] font-black uppercase text-slate-500 tracking-widest">Ingress Packet</h4>
                       </div>
-                      <div className="bg-[#020617] p-6 rounded-2xl border border-white/5 font-mono text-xs overflow-x-auto shadow-inner">
+                      <div className={`${isDarkMode ? 'bg-[#020617] border-white/5' : 'bg-slate-50 border-slate-200'} p-6 rounded-2xl border font-mono text-xs overflow-x-auto shadow-inner`}>
                         <pre className="text-slate-400 leading-relaxed">
                           {typeof activePayloadDetail.inputData === 'string' ? activePayloadDetail.inputData : JSON.stringify(activePayloadDetail.inputData, null, 2)}
                         </pre>
@@ -562,7 +589,7 @@ const App: React.FC = () => {
                         <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.4)]" />
                         <h4 className="text-[11px] font-black uppercase text-blue-500 tracking-widest">Egress Result</h4>
                       </div>
-                      <div className="bg-[#020617] p-6 rounded-2xl border border-blue-500/20 font-mono text-xs overflow-x-auto">
+                      <div className={`${isDarkMode ? 'bg-[#020617]' : 'bg-slate-50'} p-6 rounded-2xl border border-blue-500/20 font-mono text-xs overflow-x-auto`}>
                         <pre className="text-emerald-400 leading-relaxed">
                           {typeof activePayloadDetail.transformedData === 'string' ? activePayloadDetail.transformedData : JSON.stringify(activePayloadDetail.transformedData, null, 2)}
                         </pre>
@@ -570,7 +597,7 @@ const App: React.FC = () => {
                     </div>
                   </div>
 
-                  <div className="mt-8 flex items-center justify-between border-t border-white/5 pt-6">
+                  <div className={`mt-8 flex items-center justify-between border-t ${isDarkMode ? 'border-white/5' : 'border-slate-200'} pt-6`}>
                     <div className="flex items-center gap-3">
                       <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
                       <p className="text-[10px] text-slate-500 uppercase font-black tracking-widest">Trace Protocol: AGENT-v3</p>
@@ -582,8 +609,8 @@ const App: React.FC = () => {
           )}
 
           {activeLogicPanel && (
-            <div className="fixed inset-0 bg-[#020617]/70 backdrop-blur-2xl z-[100] flex items-center justify-center p-6 md:p-12 animate-in fade-in duration-300">
-              <div className={`w-full max-w-2xl bg-[#0b1120] border ${activeLogicPanel.borderColor} rounded-[2.5rem] shadow-[0_0_100px_rgba(0,0,0,0.5)] p-6 md:p-10 relative overflow-hidden`}>
+            <div className={`fixed inset-0 ${isDarkMode ? 'bg-[#020617]/70' : 'bg-slate-200/50'} backdrop-blur-2xl z-[100] flex items-center justify-center p-6 md:p-12 animate-in fade-in duration-300`}>
+              <div className={`w-full max-w-2xl ${isDarkMode ? 'bg-[#0b1120]' : 'bg-white'} border ${activeLogicPanel.borderColor} rounded-[2.5rem] shadow-[0_0_100px_rgba(0,0,0,0.5)] p-6 md:p-10 relative overflow-hidden`}>
                 <div className={`absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent ${activeLogicPanel.bgColor.replace('bg-', 'via-').replace('/10', '')} to-transparent opacity-80`} />
                 
                 <div className="flex justify-between items-start mb-8">
@@ -593,7 +620,7 @@ const App: React.FC = () => {
                   </div>
                   <button 
                     onClick={() => setActiveLogicPanel(null)}
-                    className="p-3 bg-white/5 hover:bg-white/10 rounded-2xl transition-all text-slate-400 hover:text-white group border border-white/5"
+                    className={`p-3 ${isDarkMode ? 'bg-white/5 hover:bg-white/10 hover:text-white' : 'bg-slate-100 hover:bg-slate-200 hover:text-slate-900'} rounded-2xl transition-all text-slate-400 group border border-transparent`}
                   >
                     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" className="group-hover:rotate-90 transition-transform">
                       <path d="M18 6L6 18M6 6l12 12"/>
@@ -602,14 +629,14 @@ const App: React.FC = () => {
                 </div>
 
                 <div className="space-y-6">
-                  <div className="p-5 bg-slate-950/40 rounded-2xl border border-white/5">
+                  <div className={`p-5 ${isDarkMode ? 'bg-slate-950/40 border-white/5' : 'bg-slate-50 border-slate-200'} rounded-2xl border`}>
                     <h4 className="text-[10px] font-black uppercase text-slate-500 mb-2 tracking-widest">Execution Path</h4>
-                    <p className="text-sm font-mono text-white/90">{activeLogicPanel.path}</p>
+                    <p className={`text-sm font-mono ${isDarkMode ? 'text-white/90' : 'text-slate-800'}`}>{activeLogicPanel.path}</p>
                   </div>
 
                   <div>
                     <h4 className="text-[10px] font-black uppercase text-slate-500 mb-3 tracking-widest">Strategic Overview</h4>
-                    <p className="text-sm text-slate-300 leading-relaxed font-medium">
+                    <p className={`text-sm ${isDarkMode ? 'text-slate-300' : 'text-slate-600'} leading-relaxed font-medium`}>
                       {activeLogicPanel.details}
                     </p>
                   </div>
@@ -629,7 +656,7 @@ const App: React.FC = () => {
                   </div>
                 </div>
 
-                <div className="mt-8 pt-6 border-t border-white/5 flex justify-between items-center">
+                <div className={`mt-8 pt-6 border-t ${isDarkMode ? 'border-white/5' : 'border-slate-200'} flex justify-between items-center`}>
                    <p className="text-[10px] text-slate-600 font-bold uppercase tracking-widest">Pattern ID: {activeLogicPanel.id.toUpperCase()}</p>
                    <button 
                      onClick={() => {
@@ -639,7 +666,7 @@ const App: React.FC = () => {
                         setActiveLogicPanel(null);
                         runSimulation(prompt);
                      }}
-                     className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest bg-white/5 hover:bg-white/10 text-white border border-white/10 transition-all`}
+                     className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest ${isDarkMode ? 'bg-white/5 hover:bg-white/10 text-white border-white/10' : 'bg-slate-100 hover:bg-slate-200 text-slate-900 border-slate-200'} border transition-all`}
                    >
                       Initialize This Pattern
                    </button>
@@ -650,22 +677,22 @@ const App: React.FC = () => {
 
           </div>
 
-          <div className="w-1/4 flex flex-col h-full bg-slate-950/40 border border-slate-800/40 rounded-[2.5rem] overflow-hidden shadow-xl">
+          <div className={`w-1/4 flex flex-col h-full ${isDarkMode ? 'bg-slate-950/40 border-slate-800/40' : 'bg-white/80 border-slate-200'} border rounded-[2.5rem] overflow-hidden shadow-xl`}>
             {selectedNode ? (
-              <div className="flex flex-col h-full animate-in fade-in duration-300 bg-[#020617]/80">
+              <div className={`flex flex-col h-full animate-in fade-in duration-300 ${isDarkMode ? 'bg-[#020617]/80' : 'bg-white/90'}`}>
                 <div className="p-8 pb-4 shrink-0 flex justify-between items-start">
                   <div>
                     <h2 className="text-[9px] font-black uppercase tracking-[0.3em] text-blue-500/80 mb-2">Component</h2>
-                    <h3 className="text-xl font-black text-white leading-none">{ARCHITECTURE_COMPONENTS[selectedNode]?.name}</h3>
+                    <h3 className={`text-xl font-black ${isDarkMode ? 'text-white' : 'text-slate-900'} leading-none`}>{ARCHITECTURE_COMPONENTS[selectedNode]?.name}</h3>
                   </div>
-                  <button onClick={() => setSelectedNode(null)} className="p-2 hover:bg-white/10 rounded-xl transition-colors text-slate-500 hover:text-white">
+                  <button onClick={() => setSelectedNode(null)} className={`p-2 ${isDarkMode ? 'hover:bg-white/10 text-slate-500 hover:text-white' : 'hover:bg-slate-100 text-slate-400 hover:text-slate-800'} rounded-xl transition-colors`}>
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 6L6 18M6 6l12 12"/></svg>
                   </button>
                 </div>
                 <div className="flex-1 overflow-y-auto px-8 pb-8 custom-scrollbar space-y-8">
                   <div className="space-y-3">
                     <h4 className="text-[9px] font-black uppercase text-slate-600 tracking-widest">Logic Role</h4>
-                    <p className="text-xs text-slate-400 leading-relaxed font-medium">{ARCHITECTURE_COMPONENTS[selectedNode]?.description}</p>
+                    <p className={`text-xs ${isDarkMode ? 'text-slate-400' : 'text-slate-600'} leading-relaxed font-medium`}>{ARCHITECTURE_COMPONENTS[selectedNode]?.description}</p>
                   </div>
                   <div className="space-y-3">
                     <h4 className="text-[9px] font-black uppercase text-slate-600 tracking-widest">Tech Stack</h4>
@@ -677,7 +704,7 @@ const App: React.FC = () => {
                   </div>
                   <div className="space-y-3">
                     <h4 className="text-[9px] font-black uppercase text-slate-600 tracking-widest">Insight</h4>
-                    <div className="bg-slate-950/60 p-4 rounded-xl border border-white/5 text-[10px] font-mono text-slate-400 leading-relaxed relative">
+                    <div className={`${isDarkMode ? 'bg-slate-950/60 border-white/5 text-slate-400' : 'bg-slate-50 border-slate-200 text-slate-600'} p-4 rounded-xl border text-[10px] font-mono leading-relaxed relative`}>
                       {loadingInsight ? (
                         <div className="flex items-center gap-2 animate-pulse"><div className="w-3 h-3 border-2 border-slate-600 border-t-blue-500 rounded-full animate-spin"/> Generating...</div>
                       ) : (nodeInsight || "Select component to view details.")}
@@ -686,7 +713,7 @@ const App: React.FC = () => {
                 </div>
               </div>
             ) : (
-              <div className="flex flex-col h-full bg-slate-950/30">
+              <div className={`flex flex-col h-full ${isDarkMode ? 'bg-slate-950/30' : 'bg-slate-50/50'}`}>
                 <div className="p-8 pb-4 shrink-0">
                   <h3 className="text-[9px] font-black uppercase tracking-[0.3em] text-slate-500 flex items-center gap-2">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"/> Path Analysis
@@ -696,10 +723,10 @@ const App: React.FC = () => {
                   {pathReasoning ? (
                     <div className="space-y-4 animate-in slide-in-from-right-4 fade-in duration-500">
                       {pathReasoning.split('\n\n').map((block, i) => (
-                        <div key={i} className="bg-[#0b1221] p-4 rounded-xl border border-blue-500/10 shadow-sm relative group overflow-hidden">
+                        <div key={i} className={`${isDarkMode ? 'bg-[#0b1221] border-blue-500/10' : 'bg-white border-slate-200'} p-4 rounded-xl border shadow-sm relative group overflow-hidden`}>
                           <div className="absolute top-0 left-0 w-0.5 h-full bg-gradient-to-b from-blue-500 to-transparent opacity-50 block"/>
                           {block.split('\n').map((line, j) => (
-                            <div key={j} className={j===0 ? "font-bold text-slate-200 text-[11px] mb-2 uppercase tracking-wide" : "text-[10px] text-slate-400 pl-2 border-l border-slate-800 ml-0.5 py-0.5"}>
+                            <div key={j} className={j===0 ? `font-bold ${isDarkMode ? 'text-slate-200' : 'text-slate-800'} text-[11px] mb-2 uppercase tracking-wide` : `text-[10px] ${isDarkMode ? 'text-slate-400 border-slate-800' : 'text-slate-600 border-slate-200'} pl-2 border-l ml-0.5 py-0.5`}>
                               {line}
                             </div>
                           ))}
@@ -708,7 +735,7 @@ const App: React.FC = () => {
                     </div>
                   ) : (
                     <div className="h-full flex flex-col items-center justify-center text-slate-700 opacity-60 space-y-4">
-                      <div className="w-12 h-12 rounded-full border border-slate-800 flex items-center justify-center bg-slate-900/50">
+                      <div className={`w-12 h-12 rounded-full ${isDarkMode ? 'border-slate-800 bg-slate-900/50' : 'border-slate-200 bg-slate-100'} flex items-center justify-center border`}>
                           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M9 18l6-6-6-6"/></svg>
                       </div>
                       <p className="text-[9px] uppercase font-black tracking-widest">Awaiting Input</p>
@@ -720,8 +747,8 @@ const App: React.FC = () => {
           </div>
         </div>
         
-        <div className={`transition-all duration-500 ease-in-out bg-slate-950/40 border border-slate-800/40 rounded-3xl flex flex-col overflow-hidden shadow-2xl ${isTelemetryCollapsed ? 'h-12' : 'h-80'}`}>
-          <div className="flex justify-between items-center px-6 py-3 border-b border-slate-800/30">
+        <div className={`transition-all duration-500 ease-in-out ${isDarkMode ? 'bg-slate-950/40 border-slate-800/40' : 'bg-white/80 border-slate-200'} border rounded-3xl flex flex-col overflow-hidden shadow-2xl ${isTelemetryCollapsed ? 'h-12' : 'h-80'}`}>
+          <div className={`flex justify-between items-center px-6 py-3 border-b ${isDarkMode ? 'border-slate-800/30' : 'border-slate-200'}`}>
             <div 
               className="flex items-center gap-4 cursor-pointer"
               onClick={() => setIsTelemetryCollapsed(!isTelemetryCollapsed)}
@@ -754,7 +781,7 @@ const App: React.FC = () => {
           </div>
 
           {!isTelemetryCollapsed && (
-            <div className="flex-1 flex divide-x divide-slate-800/30 overflow-hidden">
+            <div className={`flex-1 flex divide-x ${isDarkMode ? 'divide-slate-800/30' : 'divide-slate-200'} overflow-hidden`}>
               <div className="flex-[3] p-5 flex flex-col overflow-hidden">
                 <div className="flex-1 overflow-y-auto space-y-2.5 pr-3 custom-scrollbar font-mono text-[10px]" ref={scrollRef}>
                   {state.logs.map((log) => {
@@ -777,7 +804,7 @@ const App: React.FC = () => {
                                </div>
                              </div>
                            ) : (
-                             <span className={`${log.type === 'SYSTEM' ? 'text-white font-bold' : 'text-slate-600'} leading-tight`}>
+                             <span className={`${log.type === 'SYSTEM' ? (isDarkMode ? 'text-white' : 'text-slate-900') + ' font-bold' : 'text-slate-600'} leading-tight`}>
                                {log.message}: {log.details}
                              </span>
                            )}
@@ -788,14 +815,14 @@ const App: React.FC = () => {
                 </div>
               </div>
               
-              <div className="flex-[2] p-5 flex flex-col overflow-y-auto custom-scrollbar bg-slate-900/20">
+              <div className={`flex-[2] p-5 flex flex-col overflow-y-auto custom-scrollbar ${isDarkMode ? 'bg-slate-900/20' : 'bg-slate-50'}`}>
                 <h4 className="text-[10px] text-slate-500 font-black uppercase tracking-[0.3em] mb-4">Architectural Logic Panels</h4>
                 <div className="space-y-4">
                   {logicPanels.map((panel) => (
                     <div 
                       key={panel.id}
                       onClick={() => setActiveLogicPanel(panel)}
-                      className="p-3 bg-slate-950/40 rounded-xl border border-white/5 cursor-pointer hover:bg-slate-900/60 hover:border-white/10 transition-all select-none group"
+                      className={`p-3 ${isDarkMode ? 'bg-slate-950/40 border-white/5 hover:bg-slate-900/60 hover:border-white/10' : 'bg-white border-slate-200 hover:bg-slate-50 hover:border-blue-200'} rounded-xl border cursor-pointer transition-all select-none group`}
                     >
                       <h5 className={`text-[9px] ${panel.color.replace('text-','text-')} font-black uppercase mb-1 group-hover:underline decoration-white/20 underline-offset-2`}>{panel.title}</h5>
                       <p className="text-[9px] text-slate-400 leading-normal font-mono mb-1">{panel.path}</p>
@@ -834,7 +861,7 @@ const App: React.FC = () => {
 
         {(state.finalInput && state.finalOutput) && (
           <div className="fixed top-1/2 right-10 -translate-y-1/2 w-full max-w-xl bg-[#080c14]/98 border border-emerald-500/20 backdrop-blur-3xl rounded-[2.5rem] p-8 shadow-[0_50px_100px_rgba(0,0,0,0.8)] z-[200] animate-in slide-in-from-right duration-500 max-h-[85vh] overflow-y-auto custom-scrollbar">
-            <div className="flex items-center gap-4 mb-6 sticky top-0 bg-[#080c14]/40 py-2">
+            <div className="flex items-center gap-4 mb-6 sticky top-0 py-2">
               <div className="w-3 h-3 rounded-full bg-emerald-500 animate-pulse shadow-[0_0_12px_rgba(16,185,129,0.5)]" />
               <span className="text-[12px] font-black uppercase tracking-[0.4em] text-emerald-400">Synthesis Complete</span>
               <button onClick={() => setState(s => ({...s, finalInput: undefined, finalOutput: undefined}))} className="ml-auto p-2.5 text-slate-600 hover:text-white transition-colors bg-white/5 rounded-2xl border border-white/5">

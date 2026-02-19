@@ -79,7 +79,9 @@ async function generateWithFallback(
            break; // Break logic to try NEXT KEY
         }
 
-        throw error; // Unexpected error, stop cascade
+        // For any other error (500, network, etc), just log and try next model
+        console.warn(`Model ${model} failed with unexpected error: ${error.message}. Trying next...`);
+        continue;
       }
     }
   }
