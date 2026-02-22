@@ -1,5 +1,5 @@
 
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 
 // --- 1. Internal Model Config (Primary) ---
 const INTERNAL_MODEL_ENDPOINT = "https://model-broker.aviator-model.bp.anthos.otxlab.net/v1/chat/completions";
@@ -68,24 +68,26 @@ const getApiKeys = () => {
 const apiKeys = getApiKeys();
 
 const MODEL_CASCADE = [
-  "gemini-3-pro-preview",
-  "gemini-3-flash-preview",
-  "gemini-2.5-pro",
-  "gemini-2.5-flash",
-  "gemini-2.0-flash-lite-001"
+  "gemini-1.5-flash",
+  "gemini-1.5-pro",
+  "gemini-2.0-flash-lite-preview-02-05", // New standard
+  "gemini-1.5-flash-8b",
 ];
 
 async function callGeminiFallback(
-  operation: (aiClient: GoogleGenAI, model: string) => Promise<string>
+  operation: (model: any) => Promise<string>
 ): Promise<string> {
   let lastError: any;
   for (const key of apiKeys) {
-    const currentAi = new GoogleGenAI({ apiKey: key });
-    for (const model of MODEL_CASCADE) {
+    if (!key) continue;
+    const genAI = new GoogleGenerativeAI(key);
+    for (const modelName of MODEL_CASCADE) {
       try {
-        return await operation(currentAi, model);
+        const model = genAI.getGenerativeModel({ model: modelName });
+        return await operation(model);
       } catch (error: any) {
         lastError = error;
+        // console.error(`Failed with key ending in ...${key.slice(-4)} and model ${modelName}:`, error.message);
         const isQuota = error.message?.includes("429") || error.message?.includes("Quota");
         const isNotFound = error.message?.includes("404") || error.message?.includes("not found");
         if (isQuota || isNotFound) continue;
@@ -144,16 +146,14 @@ export const getArchitectInsight = async (topic: string, context: string): Promi
      const content = await callInternalModel([{ role: 'user', content: prompt }]);
      return { content, model: INTERNAL_MODEL_NAME };
   } catch (error) {
-    console.warn("Internal Model Failed, attempting Gemini Fallback:", error);
+    console.warn("Internal Model Failed, attempting Gemini Fallback.");
     
     // 2. Try Gemini Fallback
     try {
-      const content = await callGeminiFallback(async (aiClient, model) => {
-         const response = await aiClient.models.generateContent({
-          model: model,
-          contents: prompt,
-        });
-        return response.text;
+      const content = await callGeminiFallback(async (model) => {
+         const result = await model.generateContent(prompt);
+         const response = await result.response;
+         return response.text();
       });
       return { content, model: "Gemini (Fallback)" };
     } catch (geminiError) {
@@ -175,16 +175,19 @@ export const chatWithArchitect = async (history: { role: 'user' | 'assistant', c
     
     // 2. Try Gemini Fallback
     try {
-      const content = await callGeminiFallback(async (aiClient, model) => {
-        const chat = aiClient.chats.create({
-          model: model,
-          config: {
-            systemInstruction: systemPrompt || 'You are a Senior Cloud Architect. Provide clear, direct, and technical answers. Avoid unnecessary preamble. Focus on the solution.',
-          },
+      const content = await callGeminiFallback(async (model) => {
+        const chat = model.startChat({
+          history: history.slice(0, -1).map(msg => ({
+            role: msg.role === 'assistant' ? 'model' : 'user',
+            parts: [{ text: msg.content }]
+          })),
+          systemInstruction: systemPrompt || 'You are a Senior Cloud Architect. Provide clear, direct, and technical answers. Avoid unnecessary preamble. Focus on the solution.',
         });
+        
         const lastUserMessage = history[history.length - 1].content;
-        const response = await chat.sendMessage({ message: lastUserMessage });
-        return response.text;
+        const result = await chat.sendMessage(lastUserMessage);
+        const response = await result.response;
+        return response.text();
       });
       return { content, model: "Gemini (Fallback)" };
     } catch (geminiError: any) {
