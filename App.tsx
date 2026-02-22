@@ -341,11 +341,20 @@ const App: React.FC = () => {
     const isRagPreferred = /\b(polic(y|ies)|guide(s)?|doc(s|ument(ation)?)?|internal|knowledge(base)?|support|help(desk)?|in\s*house|organization(al)?)\b/.test(promptLower);
     const needsRealtimeTools = /\b(weather|temperature|forecast|news|latest|stock|price|cap|exchange|rate|currency|live|today|now|traffic|travel\s*time|flight|flights|delay|delays|arrival|departure|gate|crypto|bitcoin|ethereum|fx|forex|score|scores|sports|match|game|standings|schedule|event|events|concert|ticket|tickets|time|date|timezone|shipping|shipment|tracking|delivery|dispatch|courier|logistics|train|rail|platform|seat|availability|booking|pnr|eta|etd)\b/.test(promptLower);
     
-    // 2. Direct simple query detection (Math, Greetings)
-    // Avoids RAG/MCP for trivial inputs like "2+2" or "Hi there"
-    const isDirect = !isRagOnly && !isMcpOnly && (
+    // 2. Direct simple query detection (Greetings)
+    // Avoids RAG/MCP for trivial inputs like "Hi there"
+    const isMath = !isRagOnly && !isMcpOnly && (
       /^[\d\s\+\-\*\/\(\)\.]+$/.test(activePrompt) || // Pure math
       /^\d+[\+\-\*\/]\d+/.test(activePrompt.replace(/\s/g,'')) || // Embedded math
+      /\b(convert|conversion|unit|units)\b/.test(promptLower) ||
+      /\b(celsius|fahrenheit|kelvin|km|kilometer|kilometre|miles|mile|meters|metres|feet|foot|inch|inches|kg|kilogram|kilograms|lb|lbs|pound|pounds|liter|litre|liters|litres|gallon|gallons|ml|milliliter|millilitre|milliliters|millilitres|cup|cups|tsp|tbsp|teaspoon|tablespoon|oz|ounce|ounces|sq\s*ft|sq\s*ft\.|sq\s*feet|square\s*feet|sq\s*m|sq\s*meter|square\s*meters|square\s*metres|acre|acres|hectare|hectares|cubic\s*meter|cubic\s*metre|cubic\s*meters|cubic\s*metres|liter|litre|liters|litres|gallon|gallons|cc|cm3|m3)\b/.test(promptLower) ||
+      /\b(kwh|kilowatt\s*hour|kilowatt\s*hours|btu|btus|watt\s*hour|wh|joule|joules|calorie|calories|kcal)\b/.test(promptLower) ||
+      /\b(currency|exchange\s*rate|fx|forex|convert)\b/.test(promptLower) ||
+      /\b(timezone|time\s*zone|utc|gmt|offset)\b/.test(promptLower) ||
+      /\b(add|subtract|difference|days?|weeks?|months?|years?)\b.*\b(to|from|between)\b/.test(promptLower) ||
+      /\b(date|time)\s+math\b/.test(promptLower)
+    );
+    const isDirect = !isRagOnly && !isMcpOnly && (
       ['hello', 'hi', 'hey', 'greetings'].some(s => promptLower.startsWith(s))
     );
 
@@ -355,6 +364,10 @@ const App: React.FC = () => {
       // RAG Only
       path = [...path, WorkflowStep.LG_TO_RAG, WorkflowStep.RAG_TO_VDB, WorkflowStep.VDB_TO_RAG, WorkflowStep.RAG_TO_LG];
       reasoningText = "Route: RAG ONLY\n\n• User explicitly requested internal knowledge.\n• Accessing Vector DB for context.\n• Skipping external tools.";
+    } else if (isMath) {
+      // MCP Only for verified computation
+      path = [...path, WorkflowStep.LG_TO_MCP, WorkflowStep.MCP_TO_LG];
+      reasoningText = "Route: MCP ONLY\n\n• Computation detected.\n• Using tools for exact calculation.\n• Skipping internal knowledge base.";
     } else if (isMcpOnly) {
       // MCP Only
       path = [...path, WorkflowStep.LG_TO_MCP, WorkflowStep.MCP_TO_LG];
@@ -505,6 +518,7 @@ const App: React.FC = () => {
           newState.finalInput = activePrompt;
           newState.finalOutput = aiGeneratedOutput || "Architect response error.";
           setIsSimulating(false);
+          setPathReasoning(null);
         }
         
         return newState;

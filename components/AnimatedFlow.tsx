@@ -88,9 +88,9 @@ const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, o
   const traces = useMemo(() => [
     { id: 'UI_LG_REQ', from: 'UI', to: 'LG', path: "M 140 450 L 410 450", type: 'req' },
     
-    // LG -> LLM (Diagonal down-right)
-    { id: 'LG_LLM_REQ', from: 'LG', to: 'LLM', path: "M 590 460 C 700 460, 800 780, 910 780", type: 'req' },
-    { id: 'LG_LLM_RES', from: 'LLM', to: 'LG', path: "M 910 750 C 800 750, 700 440, 590 440", type: 'res' },
+    // LG -> LLM (L-shaped)
+    { id: 'LG_LLM_REQ', from: 'LG', to: 'LLM', path: "M 590 460 L 700 460 L 700 780 L 910 780", type: 'req' },
+    { id: 'LG_LLM_RES', from: 'LLM', to: 'LG', path: "M 910 750 L 820 750 L 820 440 L 590 440", type: 'res' },
     
     { id: 'LG_RAG_REQ', from: 'LG', to: 'RAG', path: "M 485 360 L 485 240", type: 'req' },
     { id: 'LG_RAG_RES', from: 'RAG', to: 'LG', path: "M 515 240 L 515 360", type: 'res' },
@@ -102,7 +102,7 @@ const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, o
     { id: 'LG_MCP_RES', from: 'MCP', to: 'LG', path: "M 515 690 L 515 540", type: 'res' },
     
     // Direct path to OUT is now clearer horizontally
-    { id: 'LG_OUT_REQ', from: 'LG', to: 'OUT', path: "M 590 450 L 1360 450", type: 'req' },
+    { id: 'LG_OUT_REQ', from: 'LG', to: 'OUT', path: "M 590 420 L 1360 420", type: 'req' },
   ], []);
 
   const activeTraceId = useMemo(() => {
