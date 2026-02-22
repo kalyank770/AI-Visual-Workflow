@@ -21,28 +21,39 @@ const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, o
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const handleResize = () => {
-      if (containerRef.current) {
-        const { clientWidth, clientHeight } = containerRef.current;
+    if (!containerRef.current) return;
+
+    const updateLayout = (width: number, height: number) => {
         // Bounding box + margin: Width ~1500, Height ~750 to ensure fitting
         const graphWidth = 1500; 
         const graphHeight = 800; 
         
-        const scaleX = clientWidth / graphWidth;
-        const scaleY = clientHeight / graphHeight;
+        const scaleX = width / graphWidth;
+        const scaleY = height / graphHeight;
         const newScale = Math.max(0.4, Math.min(scaleX, scaleY, 0.85)); 
         
         // Center of graph content (approx 750, 465)
-        const newX = (clientWidth / 2) - (750 * newScale);
-        const newY = (clientHeight / 2) - (465 * newScale);
+        const newX = (width / 2) - (750 * newScale);
+        const newY = (height / 2) - (465 * newScale);
 
         setTransform({ x: newX, y: newY, scale: newScale });
-      }
     };
 
-    handleResize(); // Initial call
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
+    // Use ResizeObserver to detect container size changes (e.g. when telemetry panel expands)
+    const resizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.contentRect) {
+          // Use contentRect for precise dimensions
+          updateLayout(entry.contentRect.width, entry.contentRect.height);
+        }
+      }
+    });
+
+    resizeObserver.observe(containerRef.current);
+
+    return () => {
+      resizeObserver.disconnect();
+    };
   }, []);
 
 
