@@ -1,6 +1,7 @@
 
 import React, { useMemo, useState, useRef, useEffect } from 'react';
 import { WorkflowStep } from '../types';
+import { ARCHITECTURE_COMPONENTS } from '../constants';
 
 interface AnimatedFlowProps {
   currentStep: WorkflowStep;
@@ -60,8 +61,8 @@ const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, o
 
   const nodes = useMemo(() => [
     { id: 'UI', label: 'User Interface', icon: '📱', x: 50, y: 450, color: '#3b82f6' },
-    { id: 'LG', label: 'LangGraph Hub', icon: '🕸️', x: 500, y: 450, color: '#8b5cf6' },
-    { id: 'LLM', label: 'LLM Reasoning', icon: '🧠', x: 1000, y: 450, color: '#ec4899' },
+    { id: 'LG', label: 'Orchestrator', icon: '⚡', x: 500, y: 450, color: '#8b5cf6' },
+    { id: 'LLM', label: 'Model Broker', icon: '🧠', x: 1000, y: 450, color: '#ec4899' },
     { id: 'RAG', label: 'RAG Pipeline', icon: '🔄', x: 500, y: 150, color: '#10b981' },
     { id: 'VDB', label: 'Vector DB', icon: '🗄️', x: 950, y: 150, color: '#059669' },
     { id: 'MCP', label: 'MCP Server', icon: '🛠️', x: 500, y: 780, color: '#f59e0b' },
@@ -167,6 +168,9 @@ const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, o
           <marker id="arrow-active" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="4" markerHeight="4" orient="auto-start-reverse">
             <path d="M 0 0 L 10 5 L 0 10 z" fill="#3b82f6" />
           </marker>
+          <marker id="arrow-internal" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="3" markerHeight="3" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill={isDarkMode ? "#475569" : "#cbd5e1"} />
+          </marker>
           
           <filter id="nodeGlow" x="-50%" y="-50%" width="200%" height="200%">
             <feGaussianBlur stdDeviation="15" result="blur" />
@@ -262,6 +266,7 @@ const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, o
           {nodes.map((node) => {
             const isDestination = traces.find(t => t.id === activeTraceId)?.to === node.id;
             const isSource = traces.find(t => t.id === activeTraceId)?.from === node.id;
+            const internalComps = ARCHITECTURE_COMPONENTS[node.id]?.internalComponents || [];
             
             return (
               <g 
@@ -272,32 +277,95 @@ const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, o
               >
                 {/* Node Box */}
                 <rect
-                  x="-90" y="-65" width="180" height="130" rx="28"
+                  x="-110" y="-100" width="220" height="200" rx="20"
                   className={`transition-all duration-500 ${
                     isDestination 
-                    ? (isDarkMode ? 'fill-slate-900' : 'fill-white') + ' stroke-[5px]' 
+                    ? (isDarkMode ? 'fill-slate-900' : 'fill-white') + ' stroke-[4px]' 
                     : isSource 
-                      ? (isDarkMode ? 'fill-slate-900' : 'fill-white') + ' stroke-[3px]' 
-                      : (isDarkMode ? 'fill-slate-800/80 stroke-slate-700/50' : 'fill-slate-50 stroke-slate-300') + ' stroke-1'
-                  } group-hover:stroke-blue-400 ${isDarkMode ? 'group-hover:fill-slate-800' : 'group-hover:fill-blue-50'}`}
+                      ? (isDarkMode ? 'fill-slate-900' : 'fill-white') + ' stroke-[2px]' 
+                      : (isDarkMode ? 'fill-slate-800/90 stroke-slate-700/50' : 'fill-slate-50 stroke-slate-300') + ' stroke-1'
+                  } ${isDarkMode ? 'group-hover:stroke-blue-500' : 'group-hover:stroke-blue-400'}`}
                   stroke={isDestination || isSource ? node.color : 'currentColor'}
                   style={isDestination ? { filter: 'url(#nodeGlow)' } : {}}
                 />
                 
-                {/* Node Icon and Labels */}
-                <text y="-20" textAnchor="middle" className={`${isDarkMode ? 'fill-white' : 'fill-slate-800'} text-3xl select-none pointer-events-none`}>
-                  {node.icon}
-                </text>
-                <text y="15" textAnchor="middle" className={`${isDarkMode ? 'fill-white' : 'fill-slate-900'} font-black text-[14px] uppercase tracking-wider select-none pointer-events-none`}>
-                  {node.id}
-                </text>
-                <text y="38" textAnchor="middle" className={`${isDarkMode ? 'fill-slate-400' : 'fill-slate-500'} text-[10px] font-bold uppercase tracking-[0.2em] select-none pointer-events-none`}>
-                  {node.label}
-                </text>
+                {/* Header Section */}
+                <g transform="translate(0, -75)">
+                  <text y="-5" textAnchor="middle" className={`${isDarkMode ? 'fill-white' : 'fill-slate-800'} text-4xl select-none pointer-events-none`}>
+                    {node.icon}
+                  </text>
+                  <text y="25" textAnchor="middle" className={`${isDarkMode ? 'fill-white' : 'fill-slate-900'} font-black text-[14px] uppercase tracking-wider select-none pointer-events-none`}>
+                    {node.label}
+                  </text>
+                </g>
+
+                {/* Internal Flow Visualization with connections */}
+                <g transform="translate(-100, -35)">
+                   {ARCHITECTURE_COMPONENTS[node.id]?.internalFlow?.connections && ARCHITECTURE_COMPONENTS[node.id].internalFlow!.connections.map((conn, idx) => {
+                     const fromNode = ARCHITECTURE_COMPONENTS[node.id].internalFlow!.nodes.find(n => n.id === conn.from);
+                     const toNode = ARCHITECTURE_COMPONENTS[node.id].internalFlow!.nodes.find(n => n.id === conn.to);
+                     if (!fromNode || !toNode) return null;
+
+                     return (
+                       <g key={`conn-${idx}`}>
+                         <line 
+                           x1={fromNode.x} y1={fromNode.y} 
+                           x2={toNode.x} y2={toNode.y} 
+                           stroke={isDarkMode ? "#475569" : "#cbd5e1"} 
+                           strokeWidth="1"
+                           markerEnd="url(#arrow-internal)"
+                         />
+                         {/* Moving Packet on Internal Path */}
+                         {(isDestination || isSource) && !isPaused && (
+                           <circle r="1.5" fill={isDarkMode ? "#4ade80" : "#16a34a"}>
+                             <animateMotion 
+                               dur="1.5s" 
+                               repeatCount="indefinite"
+                               path={`M ${fromNode.x},${fromNode.y} L ${toNode.x},${toNode.y}`}
+                             />
+                           </circle>
+                         )}
+                       </g>
+                     );
+                   })}
+
+                   {ARCHITECTURE_COMPONENTS[node.id]?.internalFlow?.nodes.map((n, idx) => (
+                     <g key={`inode-${node.id}-${idx}`} transform={`translate(${n.x}, ${n.y})`}>
+                       {/* Small Internal Node */}
+                       <rect 
+                        x="-20" y="-8" 
+                        width="40" height="16" 
+                        rx="3" 
+                        fill={isDarkMode ? "#1e293b" : "#f8fafc"} 
+                        stroke={isDarkMode ? "#475569" : "#cbd5e1"}
+                        strokeWidth="1"
+                       />
+                       <text 
+                        y="3" 
+                        textAnchor="middle" 
+                        fill={isDarkMode ? "#cbd5e1" : "#475569"} 
+                        fontSize="6" 
+                        fontFamily="monospace"
+                        fontWeight="bold"
+                        className="pointer-events-none select-none uppercase"
+                       >
+                         {n.label}
+                       </text>
+                     </g>
+                   ))}
+                   
+                   {!ARCHITECTURE_COMPONENTS[node.id]?.internalFlow && (
+                      <foreignObject x="0" y="0" width="200" height="135" className="pointer-events-none">
+                        <div className="w-full h-full flex items-center justify-center">
+                          <span className="text-[8px] text-slate-500 italic">No internal flow map</span>
+                        </div>
+                      </foreignObject>
+                   )}
+                </g>
 
                 {/* Passive Ping for active destinations */}
                 {isDestination && !isPaused && (
-                  <circle r="100" fill="none" stroke={node.color} strokeWidth="2" className="animate-ping opacity-10" />
+                  <circle r="120" fill="none" stroke={node.color} strokeWidth="2" className="animate-ping opacity-10" />
                 )}
               </g>
 
@@ -309,6 +377,31 @@ const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, o
       <div className="absolute top-6 left-6 pointer-events-none">
         <h3 className="text-[10px] font-black text-blue-500 uppercase tracking-[0.4em]">AI Visual workflow</h3>
         <p className="text-[9px] text-slate-500 font-mono">Stage-by-Stage visuals</p>
+      </div>
+
+      {/* Zoom Controls */}
+      <div className="absolute bottom-6 right-6 flex flex-col gap-2 z-[100]">
+        <button 
+          className={`p-2 rounded-lg border shadow-lg transition-all active:scale-95 ${isDarkMode ? 'bg-slate-800 border-slate-700 text-white hover:bg-slate-700' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'}`}
+          onClick={() => setTransform(prev => ({ ...prev, scale: Math.min(2, prev.scale + 0.1) }))}
+          title="Zoom In"
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+        </button>
+        <button 
+          className={`p-2 rounded-lg border shadow-lg transition-all active:scale-95 ${isDarkMode ? 'bg-slate-800 border-slate-700 text-white hover:bg-slate-700' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'}`}
+          onClick={() => setTransform(prev => ({ ...prev, scale: Math.max(0.2, prev.scale - 0.1) }))}
+          title="Zoom Out"
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+        </button>
+        <button 
+          className={`p-2 rounded-lg border shadow-lg transition-all active:scale-95 ${isDarkMode ? 'bg-slate-800 border-slate-700 text-white hover:bg-slate-700' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'}`}
+          onClick={() => setTransform({ x: 200, y: 30, scale: 0.6 })}
+          title="Reset View"
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path></svg>
+        </button>
       </div>
     </div>
   );

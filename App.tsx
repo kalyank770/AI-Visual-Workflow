@@ -5,6 +5,38 @@ import { ARCHITECTURE_COMPONENTS, STEP_METADATA } from './constants';
 import AnimatedFlow from './components/AnimatedFlow';
 import { getArchitectInsight, chatWithArchitect } from './services/geminiService';
 
+const InternalComponentDetail = ({ detail, isDarkMode }: { detail: any, isDarkMode: boolean }) => {
+  const [isExpanded, setIsExpanded] = useState(false);
+  
+  return (
+    <div className={`flex flex-col border rounded-md overflow-hidden ${isDarkMode ? 'bg-slate-900/40 border-slate-800' : 'bg-white border-slate-200'} transition-all duration-300`}>
+      <button 
+        onClick={() => setIsExpanded(!isExpanded)}
+        className="flex items-center justify-between w-full px-3 py-2 text-left hover:bg-slate-500/5 transition-colors group"
+      >
+        <div className="flex items-center gap-2">
+           <div className={`w-1.5 h-1.5 rounded-full ${isExpanded ? 'bg-emerald-400' : 'bg-emerald-500/40'} transition-colors`} />
+           <span className={`text-[10px] font-bold tracking-wide uppercase ${isDarkMode ? 'text-slate-300' : 'text-slate-700'}`}>{detail.name}</span>
+        </div>
+        <svg 
+          width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" 
+          className={`text-slate-500 transition-transform duration-300 ${isExpanded ? 'rotate-180 text-emerald-400' : ''}`}
+        >
+          <path d="M6 9l6 6 6-6"/>
+        </svg>
+      </button>
+      
+      <div className={`overflow-hidden transition-all duration-300 ease-in-out ${isExpanded ? 'max-h-32 opacity-100' : 'max-h-0 opacity-0'}`}>
+        <div className={`px-3 pb-3 pt-0`}>
+          <div className={`text-[10px] leading-relaxed ${isDarkMode ? 'text-slate-400' : 'text-slate-600'} border-l-2 ${isDarkMode ? 'border-slate-800' : 'border-slate-100'} pl-2 ml-0.5`}>
+            {detail.description}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const App: React.FC = () => {
   const [state, setState] = useState<SimulationState>({
     currentStep: WorkflowStep.IDLE,
@@ -725,11 +757,15 @@ const App: React.FC = () => {
                     </div>
                   </div>
                   <div className="space-y-3">
-                    <h4 className="text-[9px] font-black uppercase text-slate-600 tracking-widest">Insight</h4>
-                    <div className={`${isDarkMode ? 'bg-slate-950/60 border-white/5 text-slate-400' : 'bg-slate-50 border-slate-200 text-slate-600'} p-4 rounded-xl border text-[10px] font-mono leading-relaxed relative`}>
-                      {loadingInsight ? (
-                        <div className="flex items-center gap-2 animate-pulse"><div className="w-3 h-3 border-2 border-slate-600 border-t-blue-500 rounded-full animate-spin"/> Generating...</div>
-                      ) : (nodeInsight || "Select component to view details.")}
+                    <h4 className="text-[9px] font-black uppercase text-slate-600 tracking-widest">Internal Architecture</h4>
+                    <div className="flex flex-col gap-1.5">
+                      {ARCHITECTURE_COMPONENTS[selectedNode]?.internalDetails ? (
+                        ARCHITECTURE_COMPONENTS[selectedNode].internalDetails!.map((detail, idx) => (
+                          <InternalComponentDetail key={idx} detail={detail} isDarkMode={isDarkMode} />
+                        ))
+                      ) : (
+                         <span className="text-slate-500 text-[9px] italic">No internal component details available.</span>
+                      )}
                     </div>
                   </div>
                 </div>

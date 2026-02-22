@@ -21,6 +21,11 @@ export interface ComponentInfo {
   role: string;
   description: string;
   techStack: string[];
+  internalFlow?: {
+    nodes: { id: string; label: string; x: number; y: number }[];
+    connections: { from: string; to: string }[];
+  };
+  internalComponents?: string[]; // Keep for backward compatibility/list view if needed
 }
 
 export interface LogEntry {
