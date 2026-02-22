@@ -1,10 +1,71 @@
 
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
+declare const __VITE_API_KEY__: string | undefined;
+declare const __VITE_GEMINI_API_KEY__: string | undefined;
+declare const __VITE_GEMINI_API_PRIMARY_KEY__: string | undefined;
+declare const __VITE_GOOGLE_API_KEY__: string | undefined;
+declare const __VITE_INTERNAL_API_KEY__: string | undefined;
+declare const __INTERNAL_API_KEY__: string | undefined;
+declare const __GEMINI_API_KEY__: string | undefined;
+declare const __GEMINI_API_PRIMARY_KEY__: string | undefined;
+
+let didLogKeyDiagnostics = false;
+const logKeyDiagnosticsOnce = () => {
+  if (didLogKeyDiagnostics) return;
+  didLogKeyDiagnostics = true;
+  // Log only presence, never values.
+  // @ts-ignore
+  const processEnv = typeof process !== "undefined" ? process.env : undefined;
+  const metaEnv = (typeof import.meta !== "undefined" && import.meta.env) ? import.meta.env : undefined;
+  console.log("Key Diagnostics:", {
+    injected: {
+      VITE_API_KEY: !!__VITE_API_KEY__,
+      VITE_GEMINI_API_KEY: !!__VITE_GEMINI_API_KEY__,
+      VITE_GEMINI_API_PRIMARY_KEY: !!__VITE_GEMINI_API_PRIMARY_KEY__,
+      VITE_GOOGLE_API_KEY: !!__VITE_GOOGLE_API_KEY__,
+      VITE_INTERNAL_API_KEY: !!__VITE_INTERNAL_API_KEY__,
+      INTERNAL_API_KEY: !!__INTERNAL_API_KEY__,
+      GEMINI_API_KEY: !!__GEMINI_API_KEY__,
+      GEMINI_API_PRIMARY_KEY: !!__GEMINI_API_PRIMARY_KEY__,
+    },
+    process_env: processEnv ? {
+      VITE_API_KEY: !!processEnv.VITE_API_KEY,
+      VITE_GEMINI_API_KEY: !!processEnv.VITE_GEMINI_API_KEY,
+      VITE_GEMINI_API_PRIMARY_KEY: !!processEnv.VITE_GEMINI_API_PRIMARY_KEY,
+      VITE_GOOGLE_API_KEY: !!processEnv.VITE_GOOGLE_API_KEY,
+      VITE_INTERNAL_API_KEY: !!processEnv.VITE_INTERNAL_API_KEY,
+      INTERNAL_API_KEY: !!processEnv.INTERNAL_API_KEY,
+      GEMINI_API_KEY: !!processEnv.GEMINI_API_KEY,
+      GEMINI_API_PRIMARY_KEY: !!processEnv.GEMINI_API_PRIMARY_KEY,
+    } : "missing",
+    import_meta_keys: metaEnv ? Object.keys(metaEnv).sort() : [],
+  });
+};
+
 // --- 1. Internal Model Config (Primary) ---
 const INTERNAL_MODEL_ENDPOINT = "https://model-broker.aviator-model.bp.anthos.otxlab.net/v1/chat/completions";
-const INTERNAL_API_KEY = "sk-6wnDOKBJnJymbuSuX_bnmg";
 const INTERNAL_MODEL_NAME = "llama-3.3-70b";
+const INTERNAL_MODEL_TIMEOUT_MS = (() => {
+  // Allow override via env without breaking browser builds.
+  // @ts-ignore
+  const raw = (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_INTERNAL_MODEL_TIMEOUT_MS) || "4000";
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 4000;
+})();
+
+const getInternalApiKey = () => {
+  logKeyDiagnosticsOnce();
+  const injectedKey = (
+    (typeof __VITE_INTERNAL_API_KEY__ !== "undefined" ? __VITE_INTERNAL_API_KEY__ : undefined) ||
+    (typeof __INTERNAL_API_KEY__ !== "undefined" ? __INTERNAL_API_KEY__ : undefined)
+  );
+  // @ts-ignore
+  const processKey = (typeof process !== "undefined" && process.env) ? (process.env.VITE_INTERNAL_API_KEY || process.env.INTERNAL_API_KEY) : undefined;
+  // @ts-ignore
+  const metaKey = (typeof import.meta !== "undefined" && import.meta.env) ? (import.meta.env.VITE_INTERNAL_API_KEY || import.meta.env.INTERNAL_API_KEY) : undefined;
+  return injectedKey || processKey || metaKey || "";
+};
 
 async function callInternalModel(
   messages: { role: 'user' | 'assistant' | 'system', content: string }[],
@@ -19,14 +80,18 @@ async function callInternalModel(
 
   const controller = new AbortController();
   // User Requested: If no response in "few seconds" (4s), switch models.
-  const timeoutId = setTimeout(() => controller.abort(), 4000); 
+  const timeoutId = setTimeout(() => controller.abort(), INTERNAL_MODEL_TIMEOUT_MS);
 
   try {
+    const internalApiKey = getInternalApiKey();
+    if (!internalApiKey) {
+      throw new Error("Internal Model API Key Missing");
+    }
     const response = await fetch(INTERNAL_MODEL_ENDPOINT, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": `Bearer ${INTERNAL_API_KEY}`
+        "Authorization": `Bearer ${internalApiKey}`
       },
       body: JSON.stringify({
         model: INTERNAL_MODEL_NAME,
@@ -43,7 +108,11 @@ async function callInternalModel(
 
     const data = await response.json();
     return data.choices?.[0]?.message?.content || "";
-  } catch (error) {
+  } catch (error: any) {
+    const isAbort = error?.name === "AbortError" || error?.message?.toLowerCase?.().includes("aborted");
+    if (isAbort) {
+      throw new Error("Internal Model Timeout");
+    }
     throw error;
   } finally {
     clearTimeout(timeoutId);
@@ -51,37 +120,87 @@ async function callInternalModel(
 }
 
 // --- 2. Gemini fallback Config (Secondary) ---
+const KEY_CACHE_STORAGE = "gemini_api_keys";
+let cachedApiKeys: string[] = [];
+
+const readCachedKeys = () => {
+  if (cachedApiKeys.length > 0) return cachedApiKeys;
+  try {
+    const raw = typeof sessionStorage !== "undefined" ? sessionStorage.getItem(KEY_CACHE_STORAGE) : null;
+    const parsed = raw ? JSON.parse(raw) : [];
+    if (Array.isArray(parsed)) cachedApiKeys = parsed.filter(k => typeof k === "string");
+  } catch {
+    // Ignore storage errors (private mode, blocked storage, etc.)
+  }
+  return cachedApiKeys;
+};
+
 const getApiKeys = () => {
+  logKeyDiagnosticsOnce();
   const keys: string[] = [];
+  const metaEnv = (typeof import.meta !== "undefined" && import.meta.env) ? import.meta.env : undefined;
+
+  const injectedKeys = [
+    (typeof __VITE_API_KEY__ !== "undefined" ? __VITE_API_KEY__ : undefined),
+    (typeof __VITE_GEMINI_API_KEY__ !== "undefined" ? __VITE_GEMINI_API_KEY__ : undefined),
+    (typeof __VITE_GEMINI_API_PRIMARY_KEY__ !== "undefined" ? __VITE_GEMINI_API_PRIMARY_KEY__ : undefined),
+    (typeof __VITE_GOOGLE_API_KEY__ !== "undefined" ? __VITE_GOOGLE_API_KEY__ : undefined),
+    (typeof __GEMINI_API_KEY__ !== "undefined" ? __GEMINI_API_KEY__ : undefined),
+    (typeof __GEMINI_API_PRIMARY_KEY__ !== "undefined" ? __GEMINI_API_PRIMARY_KEY__ : undefined),
+  ];
+  for (const key of injectedKeys) {
+    if (key) keys.push(key);
+  }
 
   // 1. Try process.env (Node / Vite define)
   // @ts-ignore
   if (typeof process !== 'undefined' && process.env) {
+    // @ts-ignore
+    if (process.env.API_KEY) keys.push(process.env.API_KEY);
     // @ts-ignore
     if (process.env.GEMINI_API_PRIMARY_KEY) keys.push(process.env.GEMINI_API_PRIMARY_KEY);
     // @ts-ignore
     if (process.env.GEMINI_API_KEY) keys.push(process.env.GEMINI_API_KEY);
     // @ts-ignore
     if (process.env.VITE_API_KEY) keys.push(process.env.VITE_API_KEY);
+    // @ts-ignore
+    if (process.env.VITE_GEMINI_API_KEY) keys.push(process.env.VITE_GEMINI_API_KEY);
+    // @ts-ignore
+    if (process.env.VITE_GEMINI_API_PRIMARY_KEY) keys.push(process.env.VITE_GEMINI_API_PRIMARY_KEY);
+    // @ts-ignore
+    if (process.env.VITE_GOOGLE_API_KEY) keys.push(process.env.VITE_GOOGLE_API_KEY);
   }
 
-  // 2. Try import.meta.env (Vite Standard)
-  // @ts-ignore
-  if (import.meta && import.meta.env) {
-     // @ts-ignore
-     if (import.meta.env.VITE_GEMINI_API_PRIMARY_KEY) keys.push(import.meta.env.VITE_GEMINI_API_PRIMARY_KEY);
-     // @ts-ignore
-     if (import.meta.env.VITE_API_KEY) keys.push(import.meta.env.VITE_API_KEY);
-     // @ts-ignore
-     if (import.meta.env.GEMINI_API_KEY) keys.push(import.meta.env.GEMINI_API_KEY);
+    // 2. Try import.meta.env (Vite Standard)
+    if (metaEnv) {
+      if (metaEnv.VITE_GEMINI_API_PRIMARY_KEY) keys.push(metaEnv.VITE_GEMINI_API_PRIMARY_KEY);
+      if (metaEnv.VITE_GEMINI_API_KEY) keys.push(metaEnv.VITE_GEMINI_API_KEY);
+      if (metaEnv.VITE_API_KEY) keys.push(metaEnv.VITE_API_KEY);
+      if (metaEnv.GEMINI_API_PRIMARY_KEY) keys.push(metaEnv.GEMINI_API_PRIMARY_KEY);
+      // Non-VITE keys are not exposed in browser builds, but keep for SSR/test cases.
+      // @ts-ignore
+      if (metaEnv.GEMINI_API_KEY) keys.push(metaEnv.GEMINI_API_KEY);
   }
   
-  return [...new Set(keys)].filter(k => k && k.trim() !== "");
+  const deduped = [...new Set(keys)].filter(k => k && k.trim() !== "");
+  if (deduped.length > 0) {
+    cachedApiKeys = deduped;
+    try {
+      if (typeof sessionStorage !== "undefined") {
+        sessionStorage.setItem(KEY_CACHE_STORAGE, JSON.stringify(deduped));
+      }
+    } catch {
+      // Ignore storage errors
+    }
+  }
+  return deduped;
 };
 
-const apiKeys = getApiKeys();
-
 const MODEL_CASCADE = [
+  "gemini-3-pro-preview",
+  "gemini-3-flash-preview",
+  "gemini-2.5-pro",
+  "gemini-2.5-flash",
   "gemini-1.5-flash",
   "gemini-1.5-pro",
 ];
@@ -89,11 +208,20 @@ const MODEL_CASCADE = [
 async function callGeminiFallback(
   operation: (model: any) => Promise<string>
 ): Promise<string> {
+    const metaEnv = (typeof import.meta !== "undefined" && import.meta.env) ? import.meta.env : undefined;
+    let apiKeys = getApiKeys();
+    if (apiKeys.length === 0) {
+        const cachedKeys = readCachedKeys();
+        if (cachedKeys.length > 0) {
+          console.warn("Gemini Service: Using cached API key fallback.");
+          apiKeys = cachedKeys;
+        }
+    }
     if (apiKeys.length === 0) {
         console.error("Gemini Service Error: No API Keys found.");
-        // @ts-ignore
-        console.log("Environment Debug:", { process_env: typeof process !== 'undefined' ? 'available' : 'missing', import_meta: import.meta?.env });
-        throw new Error("No Gemini API Keys found. Please add VITE_API_KEY to your .env file.");
+      const metaEnvKeys = metaEnv ? Object.keys(metaEnv).sort() : [];
+      console.log("Environment Debug:", { process_env: typeof process !== 'undefined' ? 'available' : 'missing', import_meta_keys: metaEnvKeys });
+      throw new Error("No Gemini API Keys found. Please add VITE_API_KEY or VITE_GEMINI_API_KEY to your .env file.");
     }
   let lastError: any;
   for (const key of apiKeys) {
@@ -199,12 +327,15 @@ export const chatWithArchitect = async (history: { role: 'user' | 'assistant', c
     // 2. Try Gemini Fallback
     try {
       const content = await callGeminiFallback(async (model) => {
+        const systemInstruction = systemPrompt
+          ? { role: "system", parts: [{ text: systemPrompt }] }
+          : undefined;
         const chat = model.startChat({
           history: history.slice(0, -1).map(msg => ({
             role: msg.role === 'assistant' ? 'model' : 'user',
             parts: [{ text: msg.content }]
           })),
-          systemInstruction: systemPrompt || 'You are a Senior Cloud Architect. Provide clear, direct, and technical answers. Avoid unnecessary preamble. Focus on the solution.',
+          systemInstruction: systemInstruction || { role: "system", parts: [{ text: 'You are a Senior Cloud Architect. Provide clear, direct, and technical answers. Avoid unnecessary preamble. Focus on the solution.' }] },
         });
         
         const lastUserMessage = history[history.length - 1].content;
@@ -217,9 +348,10 @@ export const chatWithArchitect = async (history: { role: 'user' | 'assistant', c
        console.warn("All Chat Models Failed:", geminiError);
        const isKeyError = geminiError?.message?.includes('403') || geminiError?.toString().includes('API key');
        const helpText = isKeyError ? "\n\n**Troubleshooting**: Ensure you have added a valid `VITE_API_KEY` to your `.env` file." : "";
+       const rootErrorMessage = geminiError?.message || error?.message || "Unknown Error";
        
        return { 
-         content: `I am currently operating in **Offline Mode** due to connectivity issues with both Primary (Internal) and Secondary (Gemini) models. \n\nI can confirm that the workflow cycle you just ran was valid. The data flowed through the expected generic path for an **Agentic Workflow**: \n\n1. **Planning**: LLM decomposed the request.\n2. **Execution**: Tools (RAG/MCP) were called.\n3. **Synthesis**: Results were combined.\n\nError: ${error.message}${helpText}`,
+         content: `I am currently operating in **Offline Mode** due to connectivity issues with both Primary (Internal) and Secondary (Gemini) models. \n\nI can confirm that the workflow cycle you just ran was valid. The data flowed through the expected generic path for an **Agentic Workflow**: \n\n1. **Planning**: LLM decomposed the request.\n2. **Execution**: Tools (RAG/MCP) were called.\n3. **Synthesis**: Results were combined.\n\nError: ${rootErrorMessage}${helpText}`,
          model: "Cached (Offline)"
        };
     }

@@ -76,8 +76,8 @@ const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, o
 
   const nodes = useMemo(() => [
     { id: 'UI', label: 'User Interface', icon: '📱', x: 50, y: 450, color: '#3b82f6' },
-    { id: 'LG', label: 'Orchestrator (LG)', icon: '⚡', x: 500, y: 450, color: '#8b5cf6' },
-    { id: 'LLM', label: 'Model Broker (LLM)', icon: '🧠', x: 1000, y: 780, color: '#ec4899' }, // Moved to bottom row
+    { id: 'LG', label: 'LanGraph\nOrchestrator', icon: '⚡', x: 500, y: 450, color: '#8b5cf6' },
+    { id: 'LLM', label: 'LLM', icon: '🧠', x: 1000, y: 780, color: '#ec4899' }, // Moved to bottom row
     { id: 'RAG', label: 'RAG Pipeline', icon: '🔄', x: 500, y: 150, color: '#10b981' },
     { id: 'VDB', label: 'Vector DB', icon: '🗄️', x: 950, y: 150, color: '#059669' },
     { id: 'MCP', label: 'MCP Server', icon: '🛠️', x: 500, y: 780, color: '#f59e0b' },
@@ -312,7 +312,11 @@ const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, o
                     {node.icon}
                   </text>
                   <text y="25" textAnchor="middle" className={`${isDarkMode ? 'fill-white' : 'fill-slate-900'} font-black text-[14px] uppercase tracking-wider select-none pointer-events-none`}>
-                    {node.label}
+                    {node.label.split('\n').map((line, idx) => (
+                      <tspan key={`${node.id}-label-${idx}`} x="0" dy={idx === 0 ? 0 : 16}>
+                        {line}
+                      </tspan>
+                    ))}
                   </text>
                 </g>
 

@@ -287,6 +287,7 @@ const App: React.FC = () => {
     setIsPaused(false);
     setActivePayloadDetail(null);
     setPathReasoning(null);
+    setActiveModelName("Llama 3.3 70B");
   };
 
   const runSimulation = async (customPrompt?: string) => {
@@ -297,6 +298,7 @@ const App: React.FC = () => {
     
     setIsSimulating(true);
     setIsPaused(false);
+    setActiveModelName("llama-3.3-70b");
     // Removed auto-expansion of telemetry to keep it collapsed by default per user request
     // setIsTelemetryCollapsed(false); 
 
@@ -809,6 +811,12 @@ const App: React.FC = () => {
                   <span className={`text-[9px] font-mono uppercase tracking-wider ${isDarkMode ? 'text-slate-500' : 'text-slate-400'}`}>
                     Active Model: <span className="text-slate-400 dark:text-slate-300 font-bold">{activeModelName}</span>
                   </span>
+                  {isSimulating && (
+                    <span className={`text-[9px] font-mono uppercase tracking-wider ${isDarkMode ? 'text-amber-400/80' : 'text-amber-600/80'}`}>
+                      <span className="inline-block w-1 h-1 rounded-full bg-amber-400 mr-1 animate-pulse" />
+                      Running
+                    </span>
+                  )}
                 </div>
               </div>
             )}
@@ -821,7 +829,7 @@ const App: React.FC = () => {
               className="flex items-center gap-4 cursor-pointer"
               onClick={() => setIsTelemetryCollapsed(!isTelemetryCollapsed)}
             >
-              <span className="text-slate-600 uppercase font-black tracking-[0.3em] text-[10px]">Telemetry Dashboard</span>
+              <span className="text-slate-600 uppercase font-black tracking-[0.3em] text-[10px]">Dashboard</span>
               <div className="flex items-center gap-1.5">
                 <div className={`w-1.5 h-1.5 rounded-full ${isSimulating ? 'bg-blue-500 animate-pulse' : 'bg-slate-700'}`} />
                 <span className="text-[8px] text-slate-600 font-bold uppercase tracking-tighter">Sync: {isSimulating ? 'Active' : 'Standby'}</span>
