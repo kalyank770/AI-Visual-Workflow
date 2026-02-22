@@ -162,13 +162,13 @@ const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, o
       <svg ref={svgRef} width="100%" height="100%" className="relative z-10 pointer-events-none">
         <defs>
           {/* Directional Arrow Head Marker */}
-          <marker id="arrow" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="4" markerHeight="4" orient="auto-start-reverse">
+          <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="4" markerHeight="4" orient="auto-start-reverse">
             <path d="M 0 0 L 10 5 L 0 10 z" fill={isDarkMode ? "white" : "#94a3b8"} />
           </marker>
-          <marker id="arrow-active" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="4" markerHeight="4" orient="auto-start-reverse">
+          <marker id="arrow-active" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="4" markerHeight="4" orient="auto-start-reverse">
             <path d="M 0 0 L 10 5 L 0 10 z" fill="#3b82f6" />
           </marker>
-          <marker id="arrow-internal" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="3" markerHeight="3" orient="auto-start-reverse">
+          <marker id="arrow-internal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="3" markerHeight="3" orient="auto-start-reverse">
             <path d="M 0 0 L 10 5 L 0 10 z" fill={isDarkMode ? "#475569" : "#cbd5e1"} />
           </marker>
           
@@ -306,22 +306,65 @@ const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, o
                      const toNode = ARCHITECTURE_COMPONENTS[node.id].internalFlow!.nodes.find(n => n.id === conn.to);
                      if (!fromNode || !toNode) return null;
 
+                     // Calculate control points for Bezier curve
+                     // Helper to shorten path end so arrow performs correctly
+                     const angle = Math.atan2(toNode.y - fromNode.y, toNode.x - fromNode.x);
+                     const nodeW = 30; // Half-width
+                     const nodeH = 12; // Half-height
+                     
+                     // Simple box intersection logic to find edge contact point
+                     const absCos = Math.abs(Math.cos(angle));
+                     const absSin = Math.abs(Math.sin(angle));
+                     
+                     let distToEdge;
+                     // Prevent division by zero and handle aspect ratio intersection
+                     if (nodeH * absCos >= nodeW * absSin) {
+                        // Intersects vertical sides (left/right)
+                        distToEdge = nodeW / (absCos || 0.001); 
+                     } else {
+                        // Intersects horizontal sides (top/bottom)
+                        distToEdge = nodeH / (absSin || 0.001);
+                     }
+                     
+                     // End point at the edge of the target node
+                     const endX = toNode.x - Math.cos(angle) * (distToEdge + 3); 
+                     const endY = toNode.y - Math.sin(angle) * (distToEdge + 3);
+
+                     // Start point at edge of source node
+                     const startX = fromNode.x + Math.cos(angle) * (distToEdge + 2);
+                     const startY = fromNode.y + Math.sin(angle) * (distToEdge + 2);
+
+                     // Control points for a smooth S-curve
+                     // If moving mostly vertical, control points should extend vertically
+                     const isVertical = Math.abs(toNode.y - fromNode.y) > Math.abs(toNode.x - fromNode.x);
+                     const cp1x = isVertical ? startX : (startX + endX) / 2;
+                     const cp1y = isVertical ? (startY + endY) / 2 : startY;
+                     const cp2x = isVertical ? endX : (startX + endX) / 2;
+                     const cp2y = isVertical ? (startY + endY) / 2 : endY;
+
+                     const pathD = `M ${startX} ${startY} C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${endX} ${endY}`;
+
                      return (
                        <g key={`conn-${idx}`}>
-                         <line 
-                           x1={fromNode.x} y1={fromNode.y} 
-                           x2={toNode.x} y2={toNode.y} 
+                         <path 
+                           d={pathD}
+                           fill="none"
                            stroke={isDarkMode ? "#475569" : "#cbd5e1"} 
-                           strokeWidth="1"
+                           strokeWidth="1.5"
                            markerEnd="url(#arrow-internal)"
+                           opacity="0.6"
                          />
                          {/* Moving Packet on Internal Path */}
                          {(isDestination || isSource) && !isPaused && (
-                           <circle r="1.5" fill={isDarkMode ? "#4ade80" : "#16a34a"}>
+                           <circle r="2" fill={isDarkMode ? "#4ade80" : "#16a34a"}>
                              <animateMotion 
-                               dur="1.5s" 
+                               dur="2s" 
                                repeatCount="indefinite"
-                               path={`M ${fromNode.x},${fromNode.y} L ${toNode.x},${toNode.y}`}
+                               path={pathD}
+                               keyPoints="0;1"
+                               keyTimes="0;1"
+                               calcMode="spline"
+                               keySplines="0.4 0 0.2 1"
                              />
                            </circle>
                          )}
@@ -331,23 +374,24 @@ const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, o
 
                    {ARCHITECTURE_COMPONENTS[node.id]?.internalFlow?.nodes.map((n, idx) => (
                      <g key={`inode-${node.id}-${idx}`} transform={`translate(${n.x}, ${n.y})`}>
-                       {/* Small Internal Node */}
+                       {/* Internal Node - Flowchart Style */}
                        <rect 
-                        x="-20" y="-8" 
-                        width="40" height="16" 
-                        rx="3" 
-                        fill={isDarkMode ? "#1e293b" : "#f8fafc"} 
+                        x="-30" y="-12" 
+                        width="60" height="24" 
+                        rx="4" 
+                        fill={isDarkMode ? "#1e293b" : "#ffffff"} 
                         stroke={isDarkMode ? "#475569" : "#cbd5e1"}
-                        strokeWidth="1"
+                        strokeWidth="1.5"
+                        className="transition-colors duration-300 drop-shadow-sm"
                        />
                        <text 
-                        y="3" 
+                        y="4" 
                         textAnchor="middle" 
-                        fill={isDarkMode ? "#cbd5e1" : "#475569"} 
-                        fontSize="6" 
-                        fontFamily="monospace"
-                        fontWeight="bold"
-                        className="pointer-events-none select-none uppercase"
+                        fill={isDarkMode ? "#e2e8f0" : "#475569"} 
+                        fontSize="6.5" 
+                        fontFamily="sans-serif"
+                        fontWeight="600"
+                        className="pointer-events-none select-none uppercase tracking-tight"
                        >
                          {n.label}
                        </text>

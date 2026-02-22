@@ -20,9 +20,9 @@ export const ARCHITECTURE_COMPONENTS: Record<string, ComponentInfo & { internalD
     ],
     internalFlow: {
       nodes: [
-        { id: '1', label: 'Sanitizer', x: 30, y: 20 },
-        { id: '2', label: 'Session', x: 100, y: 50 },
-        { id: '3', label: 'Renderer', x: 170, y: 80 }
+        { id: '1', label: 'Input Sanitizer', x: 100, y: 20 },
+        { id: '2', label: 'Session Mgr', x: 100, y: 65 },
+        { id: '3', label: 'Stream Renderer', x: 100, y: 110 }
       ],
       connections: [
         { from: '1', to: '2' },
@@ -44,16 +44,16 @@ export const ARCHITECTURE_COMPONENTS: Record<string, ComponentInfo & { internalD
     ],
     internalFlow: {
       nodes: [
-        { id: '1', label: 'State', x: 100, y: 20 },
-        { id: '2', label: 'Interrupt', x: 40, y: 60 },
-        { id: '3', label: 'Looper', x: 160, y: 60 },
-        { id: '4', label: 'Logger', x: 100, y: 100 }
+        { id: '1', label: 'Graph State', x: 40, y: 25 },
+        { id: '2', label: 'Interrupt', x: 160, y: 25 },
+        { id: '3', label: 'Loop Detect', x: 160, y: 80 },
+        { id: '4', label: 'Trace Logger', x: 40, y: 80 }
       ],
       connections: [
-        { from: '1', to: '2' },
-        { from: '1', to: '3' },
-        { from: '2', to: '4' },
-        { from: '3', to: '4' }
+        { from: '1', to: '2' }, // Check state, then check for interrupts
+        { from: '2', to: '3' }, // If no interrupt, check loop constraints
+        { from: '3', to: '4' }, // Log execution
+        { from: '4', to: '1' }  // Update state (Feedback loop)
       ]
     }
   },
@@ -70,14 +70,15 @@ export const ARCHITECTURE_COMPONENTS: Record<string, ComponentInfo & { internalD
     ],
     internalFlow: {
       nodes: [
-        { id: '1', label: 'Router', x: 100, y: 20 },
-        { id: '2', label: 'Quota', x: 50, y: 60 },
-        { id: '3', label: 'Llama 3.3', x: 150, y: 60 }
+        { id: '1', label: 'Auth/Quota', x: 100, y: 20 },
+        { id: '2', label: 'Model Router', x: 100, y: 65 },
+        { id: '3', label: 'Llama 3.3', x: 40, y: 110 },
+        { id: '4', label: 'Gemini (F/B)', x: 160, y: 110 }
       ],
       connections: [
         { from: '1', to: '2' },
-        { from: '1', to: '3' },
-        { from: '2', to: '3' }
+        { from: '2', to: '3' },
+        { from: '2', to: '4' }
       ]
     }
   },
@@ -94,9 +95,9 @@ export const ARCHITECTURE_COMPONENTS: Record<string, ComponentInfo & { internalD
     ],
     internalFlow: {
       nodes: [
-        { id: '1', label: 'Expander', x: 40, y: 30 },
-        { id: '2', label: 'Hybrid', x: 100, y: 60 },
-        { id: '3', label: 'Ranker', x: 160, y: 90 }
+        { id: '1', label: 'Query Expander', x: 100, y: 20 },
+        { id: '2', label: 'Hybrid Search', x: 100, y: 65 },
+        { id: '3', label: 'Re-ranker', x: 100, y: 110 }
       ],
       connections: [
         { from: '1', to: '2' },
@@ -117,13 +118,13 @@ export const ARCHITECTURE_COMPONENTS: Record<string, ComponentInfo & { internalD
     ],
     internalFlow: {
       nodes: [
-        { id: '1', label: 'Embedder', x: 50, y: 20 },
-        { id: '2', label: 'HNSW', x: 150, y: 20 },
-        { id: '3', label: 'Store', x: 100, y: 70 }
+        { id: '1', label: 'Embedder', x: 40, y: 65 },
+        { id: '2', label: 'HNSW Index', x: 100, y: 25 },
+        { id: '3', label: 'Meta Store', x: 160, y: 65 }
       ],
       connections: [
-        { from: '1', to: '3' },
-        { from: '2', to: '3' }
+        { from: '1', to: '2' }, // Query to Index
+        { from: '2', to: '3' }  // Index match to Metadata fetch
       ]
     }
   },
@@ -141,16 +142,16 @@ export const ARCHITECTURE_COMPONENTS: Record<string, ComponentInfo & { internalD
     ],
     internalFlow: {
       nodes: [
-        { id: '1', label: 'OIDC', x: 100, y: 20 },
-        { id: '2', label: 'Registry', x: 40, y: 60 },
-        { id: '3', label: 'Sandbox', x: 160, y: 60 },
-        { id: '4', label: 'API', x: 100, y: 90 }
+        { id: '1', label: 'OIDC Check', x: 100, y: 20 },
+        { id: '2', label: 'Tool Registry', x: 40, y: 65 },
+        { id: '3', label: 'Sandbox', x: 160, y: 65 },
+        { id: '4', label: 'Backend API', x: 100, y: 110 }
       ],
       connections: [
-        { from: '1', to: '2' },
-        { from: '1', to: '3' },
-        { from: '2', to: '4' },
-        { from: '3', to: '4' }
+        { from: '1', to: '2' }, // Auth -> Lookup
+        { from: '1', to: '3' }, // Auth -> Exec Env (Parallel)
+        { from: '2', to: '4' }, // Registry -> Call
+        { from: '3', to: '4' }  // Sandbox -> Call
       ]
     }
   },
@@ -167,13 +168,13 @@ export const ARCHITECTURE_COMPONENTS: Record<string, ComponentInfo & { internalD
     ],
     internalFlow: {
       nodes: [
-        { id: '1', label: 'Parser', x: 50, y: 30 },
-        { id: '2', label: 'Citations', x: 150, y: 30 },
-        { id: '3', label: 'Render', x: 100, y: 80 }
+        { id: '1', label: 'MD Parser', x: 40, y: 40 },
+        { id: '2', label: 'Citation Link', x: 160, y: 40 },
+        { id: '3', label: 'DOM Render', x: 100, y: 90 }
       ],
       connections: [
         { from: '1', to: '3' },
-        { from: '2', to: '3' }
+        { from: '2', to: '3' } // Parallel processing merging into render
       ]
     }
   }
