@@ -10,11 +10,14 @@ interface AnimatedFlowProps {
   isPaused: boolean;
   prompt?: string;
   isDarkMode?: boolean;
+  isFullscreen: boolean;
+  onToggleFullscreen: () => void;
 }
 
-const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, onPayloadClick, isPaused, prompt, isDarkMode = true }) => {
+const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, onPayloadClick, isPaused, prompt, isDarkMode = true, isFullscreen, onToggleFullscreen }) => {
   // Center diagram in viewport: scale 0.6 fits height < 600px, x/y offsets center content (775, 465)
   const [transform, setTransform] = useState({ x: 200, y: 30, scale: 0.6 });
+  // const [isFullscreen, setIsFullscreen] = useState(false); // Managed by parent now
   const isDragging = useRef(false);
   const lastMousePos = useRef({ x: 0, y: 0 });
   const svgRef = useRef<SVGSVGElement>(null);
@@ -24,17 +27,18 @@ const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, o
     if (!containerRef.current) return;
 
     const updateLayout = (width: number, height: number) => {
-        // Bounding box + margin: Width ~1500, Height ~750 to ensure fitting
-        const graphWidth = 1500; 
-        const graphHeight = 800; 
+        // Increased bounding box to ensure more content fits (simulates zooming out)
+        const graphWidth = 1850; 
+        const graphHeight = 1100; 
         
         const scaleX = width / graphWidth;
         const scaleY = height / graphHeight;
-        const newScale = Math.max(0.4, Math.min(scaleX, scaleY, 0.85)); 
+        // Adjusted max scale down to prevent it from being too zoomed in on large screens
+        const newScale = Math.max(0.35, Math.min(scaleX, scaleY, 0.70)); 
         
-        // Center of graph content (approx 750, 465)
-        const newX = (width / 2) - (750 * newScale);
-        const newY = (height / 2) - (465 * newScale);
+        // Center of graph content (Adjusted based on standard layout ~800, 450)
+        const newX = (width / 2) - (780 * newScale);
+        const newY = (height / 2) - (480 * newScale);
 
         setTransform({ x: newX, y: newY, scale: newScale });
     };
@@ -72,8 +76,8 @@ const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, o
 
   const nodes = useMemo(() => [
     { id: 'UI', label: 'User Interface', icon: '📱', x: 50, y: 450, color: '#3b82f6' },
-    { id: 'LG', label: 'Orchestrator', icon: '⚡', x: 500, y: 450, color: '#8b5cf6' },
-    { id: 'LLM', label: 'Model Broker', icon: '🧠', x: 1000, y: 450, color: '#ec4899' },
+    { id: 'LG', label: 'Orchestrator (LG)', icon: '⚡', x: 500, y: 450, color: '#8b5cf6' },
+    { id: 'LLM', label: 'Model Broker (LLM)', icon: '🧠', x: 1000, y: 780, color: '#ec4899' }, // Moved to bottom row
     { id: 'RAG', label: 'RAG Pipeline', icon: '🔄', x: 500, y: 150, color: '#10b981' },
     { id: 'VDB', label: 'Vector DB', icon: '🗄️', x: 950, y: 150, color: '#059669' },
     { id: 'MCP', label: 'MCP Server', icon: '🛠️', x: 500, y: 780, color: '#f59e0b' },
@@ -84,8 +88,9 @@ const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, o
   const traces = useMemo(() => [
     { id: 'UI_LG_REQ', from: 'UI', to: 'LG', path: "M 140 450 L 410 450", type: 'req' },
     
-    { id: 'LG_LLM_REQ', from: 'LG', to: 'LLM', path: "M 590 435 L 910 435", type: 'req' },
-    { id: 'LG_LLM_RES', from: 'LLM', to: 'LG', path: "M 910 465 L 590 465", type: 'res' },
+    // LG -> LLM (Diagonal down-right)
+    { id: 'LG_LLM_REQ', from: 'LG', to: 'LLM', path: "M 590 460 C 700 460, 800 780, 910 780", type: 'req' },
+    { id: 'LG_LLM_RES', from: 'LLM', to: 'LG', path: "M 910 750 C 800 750, 700 440, 590 440", type: 'res' },
     
     { id: 'LG_RAG_REQ', from: 'LG', to: 'RAG', path: "M 485 360 L 485 240", type: 'req' },
     { id: 'LG_RAG_RES', from: 'RAG', to: 'LG', path: "M 515 240 L 515 360", type: 'res' },
@@ -96,7 +101,8 @@ const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, o
     { id: 'LG_MCP_REQ', from: 'LG', to: 'MCP', path: "M 485 540 L 485 690", type: 'req' },
     { id: 'LG_MCP_RES', from: 'MCP', to: 'LG', path: "M 515 690 L 515 540", type: 'res' },
     
-    { id: 'LG_OUT_REQ', from: 'LG', to: 'OUT', path: "M 590 445 C 800 350 1200 350 1360 445", type: 'req' },
+    // Direct path to OUT is now clearer horizontally
+    { id: 'LG_OUT_REQ', from: 'LG', to: 'OUT', path: "M 590 450 L 1360 450", type: 'req' },
   ], []);
 
   const activeTraceId = useMemo(() => {
@@ -163,7 +169,7 @@ const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, o
   return (
     <div 
       ref={containerRef}
-      className={`w-full h-full ${isDarkMode ? 'bg-[#030712] border-slate-800/40' : 'bg-slate-50 border-slate-200'} rounded-3xl border relative overflow-hidden cursor-move shadow-inner transition-colors duration-500`}
+      className={`w-full h-full ${isFullscreen ? 'fixed inset-0 z-[200]' : 'relative'} ${isDarkMode ? 'bg-[#030712] border-slate-800/40' : 'bg-slate-50 border-slate-200'} rounded-3xl border overflow-hidden cursor-move shadow-inner transition-colors duration-500`}
       onWheel={handleWheel}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
@@ -366,18 +372,28 @@ const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, o
                            opacity="0.6"
                          />
                          {/* Moving Packet on Internal Path */}
-                         {(isDestination || isSource) && !isPaused && (
-                           <circle r="2" fill={isDarkMode ? "#4ade80" : "#16a34a"}>
-                             <animateMotion 
-                               dur="2s" 
-                               repeatCount="indefinite"
-                               path={pathD}
-                               keyPoints="0;1"
-                               keyTimes="0;1"
-                               calcMode="spline"
-                               keySplines="0.4 0 0.2 1"
-                             />
-                           </circle>
+                         {(isDestination) && !isPaused && (
+                           <g> 
+                             {/* Group needed to contain multiple animations properly */}
+                             <circle r="2" fill={isDarkMode ? "#4ade80" : "#16a34a"} opacity="0">
+                               <animateMotion 
+                                 dur="1.2s"
+                                 begin={`${idx * 0.4}s`} 
+                                 repeatCount="indefinite"
+                                 path={pathD}
+                                 calcMode="spline"
+                                 keySplines="0.4 0 0.2 1"
+                               />
+                               <animate 
+                                  attributeName="opacity"
+                                  values="0;1;1;0"
+                                  keyTimes="0;0.1;0.9;1"
+                                  dur="1.2s"
+                                  begin={`${idx * 0.4}s`}
+                                  repeatCount="indefinite"
+                               />
+                             </circle>
+                           </g>
                          )}
                        </g>
                      );
@@ -429,13 +445,38 @@ const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, o
         </g>
       </svg>
 
-      <div className="absolute top-6 left-6 pointer-events-none">
+      <div className="absolute top-6 left-6 pointer-events-none z-[100]">
         <h3 className="text-[10px] font-black text-blue-500 uppercase tracking-[0.4em]">AI Visual workflow</h3>
         <p className="text-[9px] text-slate-500 font-mono">Stage-by-Stage visuals</p>
       </div>
 
+      {isFullscreen && (
+          <div className="absolute top-6 right-6 z-[200]">
+             <button 
+                onClick={onToggleFullscreen} 
+                className={`p-2 rounded-xl transition-all ${isDarkMode ? 'bg-slate-800 hover:bg-slate-700 text-white border-slate-700' : 'bg-white hover:bg-slate-100 text-slate-700 border-slate-200'} border shadow-2xl active:scale-95`}
+                title="Exit Fullscreen"
+             >
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                   <path d="M18 6L6 18M6 6l12 12"/>
+                </svg>
+             </button>
+          </div>
+      )}
+
       {/* Zoom Controls */}
       <div className="absolute bottom-6 right-6 flex flex-col gap-2 z-[100]">
+        <button 
+          className={`p-2 rounded-lg border shadow-lg transition-all active:scale-95 ${isDarkMode ? 'bg-slate-800 border-slate-700 text-white hover:bg-slate-700' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'}`}
+          onClick={onToggleFullscreen}
+          title={isFullscreen ? "Exit Fullscreen" : "Enter Fullscreen"}
+        >
+          {isFullscreen ? (
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/></svg>
+          ) : (
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>
+          )}
+        </button>
         <button 
           className={`p-2 rounded-lg border shadow-lg transition-all active:scale-95 ${isDarkMode ? 'bg-slate-800 border-slate-700 text-white hover:bg-slate-700' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'}`}
           onClick={() => setTransform(prev => ({ ...prev, scale: Math.min(2, prev.scale + 0.1) }))}

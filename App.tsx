@@ -65,6 +65,7 @@ const App: React.FC = () => {
   const [pathReasoning, setPathReasoning] = useState<string | null>(null);
   const [activeModelName, setActiveModelName] = useState<string>("Llama 3.3 70B");
   const [isDarkMode, setIsDarkMode] = useState(true);
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   // Apply dark mode class to html element for global Tailwind support if needed
   useEffect(() => {
@@ -576,8 +577,8 @@ const App: React.FC = () => {
       </header>
 
       <main className="flex-1 flex flex-col p-4 md:p-8 overflow-hidden relative">
-        <div className="flex-1 flex flex-row gap-6 mb-4 min-h-0">
-          <div className={`w-3/4 relative rounded-[2.5rem] overflow-hidden border ${isDarkMode ? 'border-slate-800/20 bg-slate-900/5' : 'border-slate-200 bg-white/50'}`}>
+        <div className="flex-1 flex flex-row gap-6 mb-4 min-h-0 relative">
+          <div className={`${isFullscreen ? '' : 'w-3/4'} relative rounded-[2.5rem] overflow-hidden border ${isDarkMode ? 'border-slate-800/20 bg-slate-900/5' : 'border-slate-200 bg-white/50'}`}>
             <AnimatedFlow 
             currentStep={state.currentStep} 
             onNodeClick={handleNodeClick} 
@@ -591,10 +592,12 @@ const App: React.FC = () => {
             isPaused={isPaused} 
             prompt={prompt} 
             isDarkMode={isDarkMode}
+            isFullscreen={isFullscreen}
+            onToggleFullscreen={() => setIsFullscreen(prev => !prev)}
           />
           
           {activePayloadDetail && (
-            <div className={`fixed inset-0 ${isDarkMode ? 'bg-[#020617]/70' : 'bg-slate-200/50'} backdrop-blur-2xl z-[100] flex items-center justify-center p-6 md:p-12 animate-in fade-in duration-300`}>
+            <div className={`fixed inset-0 ${isDarkMode ? 'bg-[#020617]/70' : 'bg-slate-200/50'} backdrop-blur-2xl z-[300] flex items-center justify-center p-6 md:p-12 animate-in fade-in duration-300`}>
                <div className={`w-full max-w-2xl ${isDarkMode ? 'bg-[#0b1120]' : 'bg-white'} border border-blue-500/30 rounded-[2.5rem] shadow-[0_0_100px_rgba(37,99,235,0.2)] p-6 md:p-10 relative overflow-hidden`}>
                   <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-600 via-indigo-500 to-emerald-500" />
                   
@@ -663,7 +666,7 @@ const App: React.FC = () => {
           )}
 
           {activeLogicPanel && (
-            <div className={`fixed inset-0 ${isDarkMode ? 'bg-[#020617]/70' : 'bg-slate-200/50'} backdrop-blur-2xl z-[100] flex items-center justify-center p-6 md:p-12 animate-in fade-in duration-300`}>
+            <div className={`fixed inset-0 ${isDarkMode ? 'bg-[#020617]/70' : 'bg-slate-200/50'} backdrop-blur-2xl z-[300] flex items-center justify-center p-6 md:p-12 animate-in fade-in duration-300`}>
               <div className={`w-full max-w-2xl ${isDarkMode ? 'bg-[#0b1120]' : 'bg-white'} border ${activeLogicPanel.borderColor} rounded-[2.5rem] shadow-[0_0_100px_rgba(0,0,0,0.5)] p-6 md:p-10 relative overflow-hidden`}>
                 <div className={`absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent ${activeLogicPanel.bgColor.replace('bg-', 'via-').replace('/10', '')} to-transparent opacity-80`} />
                 
@@ -731,9 +734,9 @@ const App: React.FC = () => {
 
           </div>
 
-          <div className={`w-1/4 flex flex-col h-full ${isDarkMode ? 'bg-slate-950/40 border-slate-800/40' : 'bg-white/80 border-slate-200'} border rounded-[2.5rem] overflow-hidden shadow-xl`}>
+          <div className={`${isFullscreen ? 'fixed right-8 top-32 bottom-24 w-[380px] z-[300] shadow-2xl pb-4' : 'w-1/4 h-full flex'} flex-col ${isDarkMode ? 'bg-slate-950/40 border-slate-800/40' : 'bg-white/80 border-slate-200'} border rounded-[2.5rem] overflow-hidden transition-all duration-300 ${!selectedNode && isFullscreen ? 'translate-x-[120%] opacity-0 pointer-events-none' : 'translate-x-0 opacity-100'}`}>
             {selectedNode ? (
-              <div className={`flex flex-col h-full animate-in fade-in duration-300 ${isDarkMode ? 'bg-[#020617]/80' : 'bg-white/90'}`}>
+              <div className={`flex flex-col h-full animate-in slide-in-from-right-8 duration-500 ${isDarkMode ? 'bg-[#020617]/90 backdrop-blur-xl' : 'bg-white/95 backdrop-blur-xl'}`}>
                 <div className="p-8 pb-4 shrink-0 flex justify-between items-start">
                   <div>
                     <h2 className="text-[9px] font-black uppercase tracking-[0.3em] text-blue-500/80 mb-2">Component</h2>
