@@ -111,6 +111,7 @@ const App: React.FC = () => {
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const isPausedRef = useRef(isPaused);
+  const runIdRef = useRef(0);
 
   useEffect(() => {
     isPausedRef.current = isPaused;
@@ -286,6 +287,7 @@ const App: React.FC = () => {
   };
 
   const resetSimulation = () => {
+    runIdRef.current += 1;
     setState({
       currentStep: WorkflowStep.IDLE,
       logs: [{ 
@@ -313,6 +315,7 @@ const App: React.FC = () => {
   const runSimulation = async (customPrompt?: string) => {
     const activePrompt = customPrompt || prompt;
     if (!activePrompt.trim() || isSimulating) return;
+    const runId = ++runIdRef.current;
     
     if (customPrompt) setPrompt(customPrompt);
     
@@ -335,6 +338,8 @@ const App: React.FC = () => {
     // 1. Explicit overrides
     const isRagOnly = promptLower.includes("rag only");
     const isMcpOnly = promptLower.includes("mcp tools only");
+    const isRagPreferred = /\b(polic(y|ies)|guide(s)?|doc(s|ument(ation)?)?|internal|knowledge(base)?|support|help(desk)?|in\s*house|organization(al)?)\b/.test(promptLower);
+    const needsRealtimeTools = /\b(weather|temperature|forecast|news|latest|stock|price|cap|exchange|rate|currency|live|today|now|traffic|travel\s*time|flight|flights|delay|delays|arrival|departure|gate|crypto|bitcoin|ethereum|fx|forex|score|scores|sports|match|game|standings|schedule|event|events|concert|ticket|tickets|time|date|timezone|shipping|shipment|tracking|delivery|dispatch|courier|logistics|train|rail|platform|seat|availability|booking|pnr|eta|etd)\b/.test(promptLower);
     
     // 2. Direct simple query detection (Math, Greetings)
     // Avoids RAG/MCP for trivial inputs like "2+2" or "Hi there"
@@ -354,7 +359,7 @@ const App: React.FC = () => {
       // MCP Only
       path = [...path, WorkflowStep.LG_TO_MCP, WorkflowStep.MCP_TO_LG];
       reasoningText = "Route: MCP ONLY\n\n• User explicitly requested external tools.\n• Calling specific APIs.\n• Skipping internal knowledge base.";
-    } else if (isDirect || !isRagPreferred) {
+    } else if (isDirect || (!isRagPreferred && !needsRealtimeTools)) {
       // Direct / Simple
       // Remove planning steps for super simple queries? 
       // Actually, let's keep planning but make it fast. 
@@ -365,6 +370,10 @@ const App: React.FC = () => {
       reasoningText = isDirect
         ? "Route: DIRECT LLM\n\n• Query classified as simple/direct.\n• No retrieval needed.\n• No external tools needed.\n• Resolving via LLM internal knowledge."
         : "Route: DIRECT LLM\n\n• General question detected.\n• RAG not required.\n• No external tools needed.\n• Resolving via LLM internal knowledge.";
+    } else if (needsRealtimeTools) {
+      // MCP Only for real-time data
+      path = [...path, WorkflowStep.LG_TO_MCP, WorkflowStep.MCP_TO_LG];
+      reasoningText = "Route: MCP ONLY\n\n• Real-time data requested.\n• Calling external tools.\n• Skipping internal knowledge base.";
     } else {
       // Hybrid (Default for complex)
       path = [...path, WorkflowStep.LG_TO_RAG, WorkflowStep.RAG_TO_VDB, WorkflowStep.VDB_TO_RAG, WorkflowStep.RAG_TO_LG, WorkflowStep.LG_TO_MCP, WorkflowStep.MCP_TO_LG];
@@ -393,11 +402,19 @@ const App: React.FC = () => {
     const stepInterval = 1200; 
 
     for (let i = 0; i < path.length; i++) {
+      if (runIdRef.current !== runId) {
+        setIsSimulating(false);
+        return;
+      }
       const step = path[i];
       let elapsed = 0;
       const pollFreq = 50;
       
       while (elapsed < stepInterval) {
+        if (runIdRef.current !== runId) {
+          setIsSimulating(false);
+          return;
+        }
         if (isPausedRef.current) {
           await new Promise(r => setTimeout(r, 100));
         } else {
@@ -408,6 +425,10 @@ const App: React.FC = () => {
       
       let aiGeneratedOutput = '';
       if (step === WorkflowStep.COMPLETED) {
+        if (runIdRef.current !== runId) {
+          setIsSimulating(false);
+          return;
+        }
         let systemPrompt = undefined;
         let enhancedPrompt = activePrompt;
         
@@ -445,6 +466,10 @@ const App: React.FC = () => {
         const aiResponse = await chatWithArchitect([
           { role: 'user', content: enhancedPrompt }
         ], systemPrompt);
+        if (runIdRef.current !== runId) {
+          setIsSimulating(false);
+          return;
+        }
         aiGeneratedOutput = aiResponse.content;
         setActiveModelName(aiResponse.model);
       }
