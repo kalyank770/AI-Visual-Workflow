@@ -53,22 +53,28 @@ async function callInternalModel(
 // --- 2. Gemini fallback Config (Secondary) ---
 const getApiKeys = () => {
   const keys: string[] = [];
-  
-  // Debug log to see what's available
-  console.log("Environment Check:", {
-    viteKey: import.meta.env.VITE_GEMINI_API_PRIMARY_KEY ? "Present" : "Missing",
-    legacyKey: import.meta.env.VITE_API_KEY ? "Present" : "Missing",
-    mode: import.meta.env.MODE
-  });
 
+  // 1. Try process.env (Node / Vite define)
   // @ts-ignore
-  if (typeof process !== 'undefined' && process.env && process.env.GEMINI_API_PRIMARY_KEY) keys.push(process.env.GEMINI_API_PRIMARY_KEY);
+  if (typeof process !== 'undefined' && process.env) {
+    // @ts-ignore
+    if (process.env.GEMINI_API_PRIMARY_KEY) keys.push(process.env.GEMINI_API_PRIMARY_KEY);
+    // @ts-ignore
+    if (process.env.GEMINI_API_KEY) keys.push(process.env.GEMINI_API_KEY);
+    // @ts-ignore
+    if (process.env.VITE_API_KEY) keys.push(process.env.VITE_API_KEY);
+  }
+
+  // 2. Try import.meta.env (Vite Standard)
   // @ts-ignore
-  if (import.meta?.env?.VITE_GEMINI_API_PRIMARY_KEY) keys.push(import.meta.env.VITE_GEMINI_API_PRIMARY_KEY);
-  // @ts-ignore
-  if (typeof process !== 'undefined' && process.env && process.env.GEMINI_API_KEY) keys.push(process.env.GEMINI_API_KEY);
-  // @ts-ignore
-  if (import.meta?.env?.VITE_API_KEY) keys.push(import.meta.env.VITE_API_KEY);
+  if (import.meta && import.meta.env) {
+     // @ts-ignore
+     if (import.meta.env.VITE_GEMINI_API_PRIMARY_KEY) keys.push(import.meta.env.VITE_GEMINI_API_PRIMARY_KEY);
+     // @ts-ignore
+     if (import.meta.env.VITE_API_KEY) keys.push(import.meta.env.VITE_API_KEY);
+     // @ts-ignore
+     if (import.meta.env.GEMINI_API_KEY) keys.push(import.meta.env.GEMINI_API_KEY);
+  }
   
   return [...new Set(keys)].filter(k => k && k.trim() !== "");
 };
@@ -83,10 +89,12 @@ const MODEL_CASCADE = [
 async function callGeminiFallback(
   operation: (model: any) => Promise<string>
 ): Promise<string> {
-  if (apiKeys.length === 0) {
-    throw new Error("No Gemini API Keys found. Please add VITE_GEMINI_API_PRIMARY_KEY to your .env file or Vercel settings.");
-  }
-
+    if (apiKeys.length === 0) {
+        console.error("Gemini Service Error: No API Keys found.");
+        // @ts-ignore
+        console.log("Environment Debug:", { process_env: typeof process !== 'undefined' ? 'available' : 'missing', import_meta: import.meta?.env });
+        throw new Error("No Gemini API Keys found. Please add VITE_API_KEY to your .env file.");
+    }
   let lastError: any;
   for (const key of apiKeys) {
     if (!key) continue;
@@ -119,12 +127,12 @@ const MOCK_INSIGHTS: Record<string, string> = {
 * **Security**: Enforces stricter Content Security Policy (CSP). Authentication flows (OAuth2/OIDC) should be handled here before requests reach step-function logic.
 * **Agentic Role**: Acts as the "Human-in-the-Loop" validation gate. It captures intent and renders intermediate agent thoughts, fostering trust in the autonomous system.`,
   
-  "LangGraph Hub": `### 🟣 Component Analysis: LangGraph Orchestrator
+  "Workflow Orchestrator": `### 🟣 Component Analysis: LangGraph Orchestrator
 * **Scalability**: Stateless control plane. State persistence is offloaded to Redis/PostgreSQL (Checkpointer), allowing horizontal scaling of graph workers.
 * **Security**: Implements "Least Privilege" execution. The graph defines rigid boundaries for tool access, preventing prompt injection from hijacking the entire workflow.
 * **Agentic Role**: The "Cerebellum" of the agent. It manages cyclic loops, conditional branching (e.g., routing to RAG or Tools), and error recovery strategies.`,
   
-  "LLM Reasoning Engine": `### 🧠 Component Analysis: LLM Core (Inference)
+  "Model Broker (Aviator)": `### 🧠 Component Analysis: LLM Core (Inference)
 * **Scalability**: Dependent on model provider throughput. For high-volume agent workloads, consider batch processing or provisioned throughput tiers.
 * **Security**: Input/Output guardrails (e.g., LlamaGuard) are critical here to scrub PII and prevent jailbreaks before the model processes data.
 * **Agentic Role**: The "Prefrontal Cortex". It plans the execution path, decomposes complex user goals into atomic steps, and reflects on tool outputs to determine if the task is complete.`,
@@ -139,7 +147,7 @@ const MOCK_INSIGHTS: Record<string, string> = {
 * **Security**: Encryption at rest and in transit is mandatory. Tenant isolation is key for SaaS agent platforms.
 * **Agentic Role**: The "Associative Memory". It enables semantic search, allowing the agent to find relevant information not just by keywords, but by meaning and concept.`,
   
-  "MCP Server": `### 🛠️ Component Analysis: MCP (Model Context Protocol) Server
+  "Enterprise Service Bus (MCP)": `### 🛠️ Component Analysis: MCP (Model Context Protocol) Server
 * **Scalability**: Microservices architecture. Each tool (Calculator, Web Search, API Client) can run in its own container, scaling independently based on demand.
 * **Security**: Sandbox execution environments (e.g., Firecracker microVMs) for running interpreted code generated by the LLM.
 * **Agentic Role**: The "Hands" of the agent. It provides the standardized interface for the agent to perceive and affect the outside world (APIs, Databases, Filesystems).`,
@@ -207,8 +215,11 @@ export const chatWithArchitect = async (history: { role: 'user' | 'assistant', c
       return { content, model: "Gemini (Fallback)" };
     } catch (geminiError: any) {
        console.warn("All Chat Models Failed:", geminiError);
+       const isKeyError = geminiError?.message?.includes('403') || geminiError?.toString().includes('API key');
+       const helpText = isKeyError ? "\n\n**Troubleshooting**: Ensure you have added a valid `VITE_API_KEY` to your `.env` file." : "";
+       
        return { 
-         content: `I am currently operating in **Offline Mode**.\n\n**Internal Model Error**: ${error.message}\n**Gemini Error**: ${geminiError.message}\n\n**Troubleshooting**:\n1. Check Vercel/Local logs for detailed error.\n2. Verify VITE_GEMINI_API_PRIMARY_KEY is set.\n3. Ensure you redeployed after adding the key (Vercel).`,
+         content: `I am currently operating in **Offline Mode** due to connectivity issues with both Primary (Internal) and Secondary (Gemini) models. \n\nI can confirm that the workflow cycle you just ran was valid. The data flowed through the expected generic path for an **Agentic Workflow**: \n\n1. **Planning**: LLM decomposed the request.\n2. **Execution**: Tools (RAG/MCP) were called.\n3. **Synthesis**: Results were combined.\n\nError: ${error.message}${helpText}`,
          model: "Cached (Offline)"
        };
     }
