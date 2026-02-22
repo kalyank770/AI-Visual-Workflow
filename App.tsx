@@ -131,6 +131,26 @@ const App: React.FC = () => {
     const promptLower = activePrompt.toLowerCase();
     const isRagOnly = promptLower.includes("rag only");
     const isMcpOnly = promptLower.includes("mcp tools only");
+    const isRagPreferred = [
+      "rag",
+      "internal",
+      "policy",
+      "support",
+      "document",
+      "guide",
+      "knowledge",
+      "help",
+      "in house",
+      "org",
+      "organization",
+      "doc",
+      "docs",
+      "documentation",
+      "knowledge base",
+      "kb",
+      "sop",
+      "handbook",
+    ].some(term => promptLower.includes(term));
     // Direct logic
     const isDirect = !isRagOnly && !isMcpOnly && (
       /^[\d\s\+\-\*\/\(\)\.]+$/.test(activePrompt) || 
@@ -334,7 +354,7 @@ const App: React.FC = () => {
       // MCP Only
       path = [...path, WorkflowStep.LG_TO_MCP, WorkflowStep.MCP_TO_LG];
       reasoningText = "Route: MCP ONLY\n\n• User explicitly requested external tools.\n• Calling specific APIs.\n• Skipping internal knowledge base.";
-    } else if (isDirect) {
+    } else if (isDirect || !isRagPreferred) {
       // Direct / Simple
       // Remove planning steps for super simple queries? 
       // Actually, let's keep planning but make it fast. 
@@ -342,7 +362,9 @@ const App: React.FC = () => {
       // So we just add EVAL steps. 
       // Wait, for simple math, we might want to skip RAG/MCP steps which is what the `else` block did.
       // So here we add NOTHING (no RAG, no MCP).
-      reasoningText = "Route: DIRECT LLM\n\n• Query classified as simple/direct.\n• No retrieval needed.\n• No external tools needed.\n• Resolving via LLM internal knowledge.";
+      reasoningText = isDirect
+        ? "Route: DIRECT LLM\n\n• Query classified as simple/direct.\n• No retrieval needed.\n• No external tools needed.\n• Resolving via LLM internal knowledge."
+        : "Route: DIRECT LLM\n\n• General question detected.\n• RAG not required.\n• No external tools needed.\n• Resolving via LLM internal knowledge.";
     } else {
       // Hybrid (Default for complex)
       path = [...path, WorkflowStep.LG_TO_RAG, WorkflowStep.RAG_TO_VDB, WorkflowStep.VDB_TO_RAG, WorkflowStep.RAG_TO_LG, WorkflowStep.LG_TO_MCP, WorkflowStep.MCP_TO_LG];
