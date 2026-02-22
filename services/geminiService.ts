@@ -53,6 +53,14 @@ async function callInternalModel(
 // --- 2. Gemini fallback Config (Secondary) ---
 const getApiKeys = () => {
   const keys: string[] = [];
+  
+  // Debug log to see what's available
+  console.log("Environment Check:", {
+    viteKey: import.meta.env.VITE_GEMINI_API_PRIMARY_KEY ? "Present" : "Missing",
+    legacyKey: import.meta.env.VITE_API_KEY ? "Present" : "Missing",
+    mode: import.meta.env.MODE
+  });
+
   // @ts-ignore
   if (typeof process !== 'undefined' && process.env && process.env.GEMINI_API_PRIMARY_KEY) keys.push(process.env.GEMINI_API_PRIMARY_KEY);
   // @ts-ignore
@@ -61,7 +69,7 @@ const getApiKeys = () => {
   if (typeof process !== 'undefined' && process.env && process.env.GEMINI_API_KEY) keys.push(process.env.GEMINI_API_KEY);
   // @ts-ignore
   if (import.meta?.env?.VITE_API_KEY) keys.push(import.meta.env.VITE_API_KEY);
-  keys.push("AIzaSyDXNuT9e8BC_BvuOgAlpWFpPCLrLfSsbKo");
+  
   return [...new Set(keys)].filter(k => k && k.trim() !== "");
 };
 
@@ -70,25 +78,32 @@ const apiKeys = getApiKeys();
 const MODEL_CASCADE = [
   "gemini-1.5-flash",
   "gemini-1.5-pro",
-  "gemini-2.0-flash-lite-preview-02-05", // New standard
-  "gemini-1.5-flash-8b",
 ];
 
 async function callGeminiFallback(
   operation: (model: any) => Promise<string>
 ): Promise<string> {
+  if (apiKeys.length === 0) {
+    throw new Error("No Gemini API Keys found. Please add VITE_GEMINI_API_PRIMARY_KEY to your .env file or Vercel settings.");
+  }
+
   let lastError: any;
   for (const key of apiKeys) {
     if (!key) continue;
+    // Log masked key for debugging
+    console.log(`[Gemini Service] Attempting execution with key ending in ...${key.slice(-4)}`);
     const genAI = new GoogleGenerativeAI(key);
     for (const modelName of MODEL_CASCADE) {
       try {
         const model = genAI.getGenerativeModel({ model: modelName });
-        return await operation(model);
+        const result = await operation(model);
+        console.log(`[Gemini Service] Success with model: ${modelName}`);
+        return result;
       } catch (error: any) {
         lastError = error;
-        // console.error(`Failed with key ending in ...${key.slice(-4)} and model ${modelName}:`, error.message);
+        console.warn(`[Gemini Service] Failed with model ${modelName}:`, error.message);
         const isQuota = error.message?.includes("429") || error.message?.includes("Quota");
+        // 404 often means Invalid Key or Model Not Found in Region
         const isNotFound = error.message?.includes("404") || error.message?.includes("not found");
         if (isQuota || isNotFound) continue;
         continue;
@@ -156,10 +171,10 @@ export const getArchitectInsight = async (topic: string, context: string): Promi
          return response.text();
       });
       return { content, model: "Gemini (Fallback)" };
-    } catch (geminiError) {
+    } catch (geminiError: any) {
       console.warn("All Models Failed (Falling back to cached insights):", geminiError);
       const fallbackContent = MOCK_INSIGHTS[topic] || 
-        `### ⚠️ Live Architect Unavailable\n\n**System Notice**: The Cloud Architect AI is offline.\n\nHowever, the system is fully operational. The **${topic}** component is functioning within normal parameters.\n\n* **Status**: Active\n* **Mode**: Fallback Simulation\n* **Recommendation**: Continue testing workflow logic.`;
+        `### ⚠️ Live Architect Unavailable\n\n**System Notice**: The Cloud Architect AI is offline.\n\nError Details: ${geminiError.message || "Unknown Error"}\n\nHowever, the system is fully operational. The **${topic}** component is functioning within normal parameters.\n\n* **Status**: Active\n* **Mode**: Fallback Simulation\n* **Recommendation**: Continue testing workflow logic.`;
       return { content: fallbackContent, model: "Cached (Offline)" };
     }
   }
@@ -193,7 +208,7 @@ export const chatWithArchitect = async (history: { role: 'user' | 'assistant', c
     } catch (geminiError: any) {
        console.warn("All Chat Models Failed:", geminiError);
        return { 
-         content: `I am currently operating in **Offline Mode** due to connectivity issues with both Primary (Internal) and Secondary (Gemini) models. \n\nI can confirm that the workflow cycle you just ran was valid. The data flowed through the expected generic path for an **Agentic Workflow**: \n\n1. **Planning**: LLM decomposed the request.\n2. **Execution**: Tools (RAG/MCP) were called.\n3. **Synthesis**: Results were combined.\n\nError: ${error.message}`,
+         content: `I am currently operating in **Offline Mode**.\n\n**Internal Model Error**: ${error.message}\n**Gemini Error**: ${geminiError.message}\n\n**Troubleshooting**:\n1. Check Vercel/Local logs for detailed error.\n2. Verify VITE_GEMINI_API_PRIMARY_KEY is set.\n3. Ensure you redeployed after adding the key (Vercel).`,
          model: "Cached (Offline)"
        };
     }
