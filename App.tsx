@@ -1,9 +1,9 @@
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { WorkflowStep, SimulationState, LogEntry } from './types';
 import { ARCHITECTURE_COMPONENTS, STEP_METADATA } from './constants';
 import AnimatedFlow from './components/AnimatedFlow';
-import { getArchitectInsight, chatWithArchitect } from './services/geminiService';
+import { getArchitectInsight, chatWithArchitect, hasAnyApiKeys } from './services/geminiService';
 
 const InternalComponentDetail = ({ detail, isDarkMode }: { detail: any, isDarkMode: boolean }) => {
   const [isExpanded, setIsExpanded] = useState(false);
@@ -66,6 +66,7 @@ const App: React.FC = () => {
   const [activeModelName, setActiveModelName] = useState<string>("Llama 3.3 70B");
   const [isDarkMode, setIsDarkMode] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const hasKeys = useMemo(() => hasAnyApiKeys(), []);
 
   // Apply dark mode class to html element for global Tailwind support if needed
   useEffect(() => {
@@ -196,10 +197,10 @@ const App: React.FC = () => {
         simpleTransformation = `{ context: "...", tool_data: "..." } → Final_Prompt("Synthesize answer for: ${shortPrompt}")`;
         break;
       case WorkflowStep.LLM_TO_LG_EVAL:
-        simpleTransformation = `Generation → Markdown("# Analysis\nBased on retrieved data...")`;
+        simpleTransformation = "LLM writes the final response in plain language.";
         break;
       case WorkflowStep.LG_TO_OUT:
-        simpleTransformation = `Markdown_Object → SSE_Stream(chunk_1, chunk_2, chunk_3)`;
+        simpleTransformation = "System streams the response to the screen in small chunks.";
         break;
       case WorkflowStep.COMPLETED:
         simpleTransformation = `Cycle Complete. final_state = "WAITING"`;
@@ -891,6 +892,12 @@ const App: React.FC = () => {
               onClick={() => setIsTelemetryCollapsed(!isTelemetryCollapsed)}
             >
               <span className="text-slate-600 uppercase font-black tracking-[0.3em] text-[10px]">Dashboard</span>
+              <div className="flex items-center gap-1.5">
+                <div className={`w-1.5 h-1.5 rounded-full ${hasKeys ? 'bg-emerald-500' : 'bg-red-500'}`} />
+                <span className={`text-[8px] font-bold uppercase tracking-tighter ${hasKeys ? 'text-emerald-400' : 'text-red-400'}`}>
+                  Keys: {hasKeys ? 'Found' : 'Not Found'}
+                </span>
+              </div>
               <div className="flex items-center gap-1.5">
                 <div className={`w-1.5 h-1.5 rounded-full ${isSimulating ? 'bg-blue-500 animate-pulse' : 'bg-slate-700'}`} />
                 <span className="text-[8px] text-slate-600 font-bold uppercase tracking-tighter">Sync: {isSimulating ? 'Active' : 'Standby'}</span>

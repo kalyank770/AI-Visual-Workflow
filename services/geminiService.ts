@@ -196,6 +196,12 @@ const getApiKeys = () => {
   return deduped;
 };
 
+export const hasAnyApiKeys = () => {
+  const hasInternal = Boolean(getInternalApiKey());
+  const hasExternal = getApiKeys().length > 0;
+  return hasInternal || hasExternal;
+};
+
 const MODEL_CASCADE = [
   "gemini-3-pro-preview",
   "gemini-3-flash-preview",
@@ -255,12 +261,12 @@ const MOCK_INSIGHTS: Record<string, string> = {
 * **Security**: Enforces stricter Content Security Policy (CSP). Authentication flows (OAuth2/OIDC) should be handled here before requests reach step-function logic.
 * **Agentic Role**: Acts as the "Human-in-the-Loop" validation gate. It captures intent and renders intermediate agent thoughts, fostering trust in the autonomous system.`,
   
-  "Workflow Orchestrator": `### 🟣 Component Analysis: LangGraph Orchestrator
+  "Workflow Orchestrator (LanGraph)": `### 🟣 Component Analysis: LangGraph Orchestrator
 * **Scalability**: Stateless control plane. State persistence is offloaded to Redis/PostgreSQL (Checkpointer), allowing horizontal scaling of graph workers.
 * **Security**: Implements "Least Privilege" execution. The graph defines rigid boundaries for tool access, preventing prompt injection from hijacking the entire workflow.
 * **Agentic Role**: The "Cerebellum" of the agent. It manages cyclic loops, conditional branching (e.g., routing to RAG or Tools), and error recovery strategies.`,
   
-  "Model Broker (Aviator)": `### 🧠 Component Analysis: LLM Core (Inference)
+  "Large Language Model (LLM)": `### 🧠 Component Analysis: LLM Core (Inference)
 * **Scalability**: Dependent on model provider throughput. For high-volume agent workloads, consider batch processing or provisioned throughput tiers.
 * **Security**: Input/Output guardrails (e.g., LlamaGuard) are critical here to scrub PII and prevent jailbreaks before the model processes data.
 * **Agentic Role**: The "Prefrontal Cortex". It plans the execution path, decomposes complex user goals into atomic steps, and reflects on tool outputs to determine if the task is complete.`,

@@ -31,7 +31,7 @@ export const ARCHITECTURE_COMPONENTS: Record<string, ComponentInfo & { internalD
     }
   },
   LG: {
-    name: 'Workflow Orchestrator',
+    name: 'Workflow Orchestrator (LanGraph)',
     role: 'Stateful Controller',
     description: 'The central hub managing the flow of data between tools, memory, and the reasoning engine (Internal Model Broker).',
     techStack: ['LangChain', 'Python/JS', 'State Management'],
@@ -58,7 +58,7 @@ export const ARCHITECTURE_COMPONENTS: Record<string, ComponentInfo & { internalD
     }
   },
   LLM: {
-    name: 'Model Broker (Aviator)',
+    name: 'Large Language Model (LLM)',
     role: 'The Brain (Private)',
     description: 'Secure, high-throughput inference engine hosted on internal infrastructure. Routes requests to Llama 3.3 70B with Gemini Fallback.',
     techStack: ['Llama 3.3 70B', 'Gemini Fallback', 'Internal Gateway'],
@@ -275,7 +275,7 @@ export const STEP_METADATA: Record<WorkflowStep, { label: string; details: strin
   },
   [WorkflowStep.LG_TO_OUT]: { 
     label: 'Streaming', 
-    details: 'Final Output: Streaming Markdown Bytes to UI', 
+    details: 'Final Output: Streaming the answer to the UI', 
     sourceId: 'LG', 
     targetId: 'OUT',
     inputData: { result_buffer: "..." },
