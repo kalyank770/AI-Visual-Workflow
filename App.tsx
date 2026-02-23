@@ -63,10 +63,29 @@ const App: React.FC = () => {
   const [activePayloadDetail, setActivePayloadDetail] = useState<LogEntry | null>(null);
   const [activeLogicPanel, setActiveLogicPanel] = useState<any | null>(null);
   const [pathReasoning, setPathReasoning] = useState<string | null>(null);
+  const [activePath, setActivePath] = useState<WorkflowStep[]>([]);
   const [activeModelName, setActiveModelName] = useState<string>("Llama 3.3 70B");
   const [isDarkMode, setIsDarkMode] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const hasKeys = useMemo(() => hasAnyApiKeys(), []);
+  const activeStepMeta = STEP_METADATA[state.currentStep];
+  const activeComponentId = activeStepMeta?.targetId || activeStepMeta?.sourceId;
+  const activeComponentName = activeComponentId ? ARCHITECTURE_COMPONENTS[activeComponentId]?.name : null;
+  const pathComponents = useMemo(() => {
+    const components: string[] = [];
+    activePath.forEach((step) => {
+      const meta = STEP_METADATA[step];
+      if (!meta) return;
+      if (meta.sourceId && components[components.length - 1] !== meta.sourceId) {
+        components.push(meta.sourceId);
+      }
+      if (meta.targetId && components[components.length - 1] !== meta.targetId) {
+        components.push(meta.targetId);
+      }
+    });
+    return components;
+  }, [activePath]);
+  const activeComponentIndex = activeComponentId ? pathComponents.indexOf(activeComponentId) : -1;
 
   // Apply dark mode class to html element for global Tailwind support if needed
   useEffect(() => {
@@ -310,6 +329,7 @@ const App: React.FC = () => {
     setIsPaused(false);
     setActivePayloadDetail(null);
     setPathReasoning(null);
+    setActivePath([]);
     setActiveModelName("Llama 3.3 70B");
   };
 
@@ -397,6 +417,7 @@ const App: React.FC = () => {
     setPathReasoning(reasoningText);
 
     path = [...path, WorkflowStep.LG_TO_LLM_EVAL, WorkflowStep.LLM_TO_LG_EVAL, WorkflowStep.LG_TO_OUT, WorkflowStep.COMPLETED];
+    setActivePath(path);
 
 
     setState(prev => ({ 
@@ -926,7 +947,7 @@ const App: React.FC = () => {
 
           {!isTelemetryCollapsed && (
             <div className={`flex-1 flex divide-x ${isDarkMode ? 'divide-slate-800/30' : 'divide-slate-200'} overflow-hidden`}>
-              <div className="flex-[3] p-5 flex flex-col overflow-hidden">
+              <div className="flex-[4] p-5 flex flex-col overflow-hidden">
                 <div className="flex-1 overflow-y-auto space-y-2.5 pr-3 custom-scrollbar font-mono text-xs" ref={scrollRef}>
                   {state.logs.map((log) => {
                     const isExec = log.type === 'EXEC';
@@ -959,46 +980,24 @@ const App: React.FC = () => {
                 </div>
               </div>
               
-              <div className={`flex-[2] p-5 flex flex-col overflow-y-auto custom-scrollbar ${isDarkMode ? 'bg-slate-900/20' : 'bg-slate-50'}`}>
-                <h4 className="text-xs text-slate-500 font-black uppercase tracking-[0.3em] mb-4">Architectural Logic Panels</h4>
-                <div className="space-y-4">
+              <div className={`flex-none w-[260px] p-5 flex flex-col overflow-y-auto custom-scrollbar ${isDarkMode ? 'bg-slate-900/20' : 'bg-slate-50'}`}>
+                <div className="flex flex-col items-start space-y-4">
                   {logicPanels.map((panel) => (
                     <div 
                       key={panel.id}
                       onClick={() => setActiveLogicPanel(panel)}
-                      className={`p-3 ${isDarkMode ? 'bg-slate-950/40 border-white/5 hover:bg-slate-900/60 hover:border-white/10' : 'bg-white border-slate-200 hover:bg-slate-50 hover:border-blue-200'} rounded-xl border cursor-pointer transition-all select-none group`}
+                      className={`p-3 w-fit max-w-[240px] ${isDarkMode ? 'bg-slate-950/40 border-white/5 hover:bg-slate-900/60 hover:border-white/10' : 'bg-white border-slate-200 hover:bg-slate-50 hover:border-blue-200'} rounded-xl border cursor-pointer transition-all select-none group`}
                     >
                       <h5 className={`text-xs ${panel.color.replace('text-','text-')} font-black uppercase mb-1 group-hover:underline decoration-white/20 underline-offset-2`}>{panel.title}</h5>
-                      <p className="text-[10px] text-slate-400 leading-normal font-mono mb-1">{panel.path}</p>
-                      <p className="text-[10px] text-slate-500 leading-normal italic">{panel.description}</p>
+                      <div className="max-h-0 opacity-0 overflow-hidden transition-all duration-300 group-hover:max-h-24 group-hover:opacity-100">
+                        <p className="text-[10px] text-slate-400 leading-normal font-mono mb-1">{panel.path}</p>
+                        <p className="text-[10px] text-slate-500 leading-normal italic">{panel.description}</p>
+                      </div>
                     </div>
                   ))}
                 </div>
               </div>
 
-              <div className="flex-1 p-5 flex flex-col justify-between">
-                <div className="space-y-4">
-                  <div className="flex justify-between items-center">
-                    <span className="text-xs text-slate-500 font-bold uppercase tracking-widest">Node State</span>
-                    <span className="text-xs text-emerald-500 font-black uppercase tracking-widest">{state.currentStep === WorkflowStep.IDLE ? 'IDLE' : 'BUSY'}</span>
-                  </div>
-                </div>
-                
-                <div className="pt-2">
-                  <div className="flex justify-between mb-1.5">
-                    <span className="text-[10px] text-slate-700 font-black uppercase">Progression</span>
-                    <span className="text-[10px] text-blue-500 font-black">
-                      {Math.round((Object.values(WorkflowStep).indexOf(state.currentStep) / (Object.values(WorkflowStep).length - 1)) * 100)}%
-                    </span>
-                  </div>
-                  <div className="w-full h-1 bg-slate-800/50 rounded-full overflow-hidden">
-                    <div 
-                      className="h-full bg-gradient-to-r from-blue-600 to-indigo-500 transition-all duration-700 ease-out" 
-                      style={{ width: `${(Object.values(WorkflowStep).indexOf(state.currentStep) / (Object.values(WorkflowStep).length - 1)) * 100}%` }}
-                    />
-                  </div>
-                </div>
-              </div>
             </div>
           )}
         </div>
