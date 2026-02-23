@@ -63,6 +63,8 @@ const App: React.FC = () => {
   const [activePayloadDetail, setActivePayloadDetail] = useState<LogEntry | null>(null);
   const [activeLogicPanel, setActiveLogicPanel] = useState<any | null>(null);
   const [pathReasoning, setPathReasoning] = useState<string | null>(null);
+  const [pathHistory, setPathHistory] = useState<{ prompt: string; reasoning: string; logId: string }[]>([]);
+  const [highlightedLogId, setHighlightedLogId] = useState<string | null>(null);
   const [activePath, setActivePath] = useState<WorkflowStep[]>([]);
   const [activeModelName, setActiveModelName] = useState<string>("Llama 3.3 70B");
   const [isDarkMode, setIsDarkMode] = useState(true);
@@ -86,6 +88,22 @@ const App: React.FC = () => {
     return components;
   }, [activePath]);
   const activeComponentIndex = activeComponentId ? pathComponents.indexOf(activeComponentId) : -1;
+  const logRuns = useMemo(() => {
+    const runs: LogEntry[][] = [];
+    let current: LogEntry[] = [];
+
+    state.logs.forEach((log) => {
+      if (log.message === 'Handshake initiated') {
+        if (current.length > 0) runs.push(current);
+        current = [log];
+        return;
+      }
+      current.push(log);
+    });
+
+    if (current.length > 0) runs.push(current);
+    return runs;
+  }, [state.logs]);
 
   // Apply dark mode class to html element for global Tailwind support if needed
   useEffect(() => {
@@ -139,7 +157,7 @@ const App: React.FC = () => {
 
   useEffect(() => {
     if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      scrollRef.current.scrollTop = 0;
     }
   }, [state.logs]);
 
@@ -306,6 +324,18 @@ const App: React.FC = () => {
     }));
   };
 
+  const openLogEntry = (logId: string) => {
+    setIsTelemetryCollapsed(false);
+    setTimeout(() => {
+      const target = document.getElementById(`log-${logId}`);
+      if (target) {
+        setHighlightedLogId(logId);
+        target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        setTimeout(() => setHighlightedLogId(null), 3500);
+      }
+    }, 120);
+  };
+
   const resetSimulation = () => {
     runIdRef.current += 1;
     setState({
@@ -329,6 +359,7 @@ const App: React.FC = () => {
     setIsPaused(false);
     setActivePayloadDetail(null);
     setPathReasoning(null);
+    setPathHistory([]);
     setActivePath([]);
     setActiveModelName("Llama 3.3 70B");
   };
@@ -414,7 +445,9 @@ const App: React.FC = () => {
       reasoningText = "Route: HYBRID (RAG + MCP)\n\n• Complex intent detected.\n• Retrieving context from Vector DB.\n• Executing external tools for real-time data.\n• Synthesizing full response.";
     }
 
+    const handshakeId = `handshake_${Date.now()}`;
     setPathReasoning(reasoningText);
+    setPathHistory(prev => [{ prompt: activePrompt, reasoning: reasoningText, logId: handshakeId }, ...prev].slice(0, 5));
 
     path = [...path, WorkflowStep.LG_TO_LLM_EVAL, WorkflowStep.LLM_TO_LG_EVAL, WorkflowStep.LG_TO_OUT, WorkflowStep.COMPLETED];
     setActivePath(path);
@@ -424,7 +457,7 @@ const App: React.FC = () => {
       ...prev, 
       currentStep: WorkflowStep.UI_TO_LG, 
       logs: [...prev.logs, {
-        id: `handshake_${Date.now()}`,
+        id: handshakeId,
         type: 'SYSTEM',
         message: 'Handshake initiated',
         details: `Request: "${activePrompt}"`,
@@ -540,7 +573,7 @@ const App: React.FC = () => {
           newState.finalInput = activePrompt;
           newState.finalOutput = aiGeneratedOutput || "Architect response error.";
           setIsSimulating(false);
-          setPathReasoning(null);
+          setPrompt('');
         }
         
         return newState;
@@ -866,14 +899,41 @@ const App: React.FC = () => {
                   </h3>
                 </div>
                 <div className="flex-1 overflow-y-auto px-8 pb-8 custom-scrollbar">
-                  {pathReasoning ? (
+                  {pathHistory.length > 0 ? (
                     <div className="space-y-4 animate-in slide-in-from-right-4 fade-in duration-500">
-                      {pathReasoning.split('\n\n').map((block, i) => (
-                        <div key={i} className={`${isDarkMode ? 'bg-[#0b1221] border-blue-500/10' : 'bg-white border-slate-200'} p-4 rounded-xl border shadow-sm relative group overflow-hidden`}>
-                          <div className="absolute top-0 left-0 w-0.5 h-full bg-gradient-to-b from-blue-500 to-transparent opacity-50 block"/>
-                          {block.split('\n').map((line, j) => (
-                            <div key={j} className={j===0 ? `font-bold ${isDarkMode ? 'text-slate-200' : 'text-slate-800'} text-[11px] mb-2 uppercase tracking-wide` : `text-[10px] ${isDarkMode ? 'text-slate-400 border-slate-800' : 'text-slate-600 border-slate-200'} pl-2 border-l ml-0.5 py-0.5`}>
-                              {line}
+                      {pathHistory.map((item, index) => (
+                        <div key={`${item.prompt}-${index}`} className={`${index === 0 ? (isDarkMode ? 'bg-[#0b1221] border-blue-500/10' : 'bg-white border-slate-200') : (isDarkMode ? 'bg-[#0b1221]/40 border-slate-800/40' : 'bg-slate-50 border-slate-200/60')} p-4 rounded-xl border shadow-sm relative overflow-hidden`}>
+                          {index === 0 && (
+                            <div className="absolute top-0 left-0 w-0.5 h-full bg-gradient-to-b from-blue-500 to-transparent opacity-50 block"/>
+                          )}
+                          <div className="flex items-center justify-between mb-2">
+                            <div className={`${index === 0 ? (isDarkMode ? 'text-slate-200' : 'text-slate-800') : (isDarkMode ? 'text-slate-500' : 'text-slate-400')} text-[10px] uppercase tracking-widest font-black`}>
+                              {index === 0 ? 'Latest Question' : 'Previous Question'}
+                            </div>
+                            <button
+                              onClick={() => openLogEntry(item.logId)}
+                              className={`${isDarkMode ? 'bg-slate-900/60 text-slate-300 border-slate-700/60 hover:bg-slate-900' : 'bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200'} text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full border transition-colors`}
+                            >
+                              Log
+                            </button>
+                          </div>
+                          <div className={`${index === 0 ? (isDarkMode ? 'text-slate-300' : 'text-slate-700') : (isDarkMode ? 'text-slate-500' : 'text-slate-400')} text-[10px] font-mono mb-3`}>
+                            "{item.prompt}"
+                          </div>
+                          {index !== 0 && (
+                            <div className="mb-2">
+                              <span className={`${isDarkMode ? 'bg-slate-800/60 text-slate-400 border-slate-700/60' : 'bg-slate-100 text-slate-500 border-slate-200'} text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full border`}>
+                                {item.reasoning.split('\n')[0]}
+                              </span>
+                            </div>
+                          )}
+                          {index === 0 && item.reasoning.split('\n\n').map((block, i) => (
+                            <div key={i} className="mb-3 last:mb-0">
+                              {block.split('\n').map((line, j) => (
+                                <div key={j} className={j===0 ? `font-bold ${isDarkMode ? 'text-slate-200' : 'text-slate-800'} text-[11px] mb-2 uppercase tracking-wide` : `text-[10px] ${isDarkMode ? 'text-slate-400 border-slate-800' : 'text-slate-600 border-slate-200'} pl-2 border-l ml-0.5 py-0.5`}>
+                                  {line}
+                                </div>
+                              ))}
                             </div>
                           ))}
                         </div>
@@ -948,35 +1008,43 @@ const App: React.FC = () => {
           {!isTelemetryCollapsed && (
             <div className={`flex-1 flex divide-x ${isDarkMode ? 'divide-slate-800/30' : 'divide-slate-200'} overflow-hidden`}>
               <div className="flex-[4] p-5 flex flex-col overflow-hidden">
-                <div className="flex-1 overflow-y-auto space-y-2.5 pr-3 custom-scrollbar font-mono text-xs" ref={scrollRef}>
-                  {state.logs.map((log) => {
-                    const isExec = log.type === 'EXEC';
-                    return (
-                      <div key={log.id} className="group/log flex gap-4 items-start animate-in fade-in slide-in-from-left-4 duration-500 border-l-2 border-transparent hover:border-blue-500/30 pl-2 transition-colors relative">
-                        <span className="text-slate-700 font-black tabular-nums shrink-0 uppercase w-12 tracking-tighter">
-                          {log.timestamp.split(' ')[0]}
-                        </span>
-                        <div className="flex-1">
-                           {isExec ? (
-                             <div className="flex justify-between items-start pr-12">
-                               <div className="flex flex-col gap-0.5">
-                                 <div className="text-blue-400 font-black uppercase tracking-widest text-[10px]">
-                                   {log.source} → {log.destination}
+                <div className="flex-1 overflow-y-auto space-y-4 pr-3 custom-scrollbar font-mono text-xs" ref={scrollRef}>
+                  {[...logRuns].reverse().map((run, runIndex) => (
+                    <div key={`run-${runIndex}`} className="space-y-2.5">
+                      {run.map((log) => {
+                        const isExec = log.type === 'EXEC';
+                        return (
+                          <div
+                            id={`log-${log.id}`}
+                            key={log.id}
+                            className={`group/log flex gap-4 items-start animate-in fade-in slide-in-from-left-4 duration-500 border-l-2 pl-2 transition-colors relative ${highlightedLogId === log.id ? (isDarkMode ? 'border-blue-400 bg-blue-500/10 shadow-[0_0_12px_rgba(59,130,246,0.25)] animate-[pulse_1.1s_ease-in-out_infinite]' : 'border-blue-500 bg-blue-50 shadow-[0_0_12px_rgba(59,130,246,0.2)] animate-[pulse_1.1s_ease-in-out_infinite]') : 'border-transparent hover:border-blue-500/30'}`}
+                          >
+                            <span className="text-slate-700 font-black tabular-nums shrink-0 uppercase w-12 tracking-tighter">
+                              {log.timestamp.split(' ')[0]}
+                            </span>
+                            <div className="flex-1">
+                               {isExec ? (
+                                 <div className="flex justify-between items-start pr-12">
+                                   <div className="flex flex-col gap-0.5">
+                                     <div className="text-blue-400 font-black uppercase tracking-widest text-[10px]">
+                                       {log.source} → {log.destination}
+                                     </div>
+                                     <div className="text-slate-500 leading-tight text-xs">
+                                       {log.details}
+                                     </div>
+                                   </div>
                                  </div>
-                                 <div className="text-slate-500 leading-tight text-xs">
-                                   {log.details}
-                                 </div>
-                               </div>
-                             </div>
-                           ) : (
-                             <span className={`${log.type === 'SYSTEM' ? (isDarkMode ? 'text-white' : 'text-slate-900') + ' font-bold' : 'text-slate-600'} leading-tight`}>
-                               {log.message}: {log.details}
-                             </span>
-                           )}
-                        </div>
-                      </div>
-                    );
-                  })}
+                               ) : (
+                                 <span className={`${log.type === 'SYSTEM' ? (isDarkMode ? 'text-white' : 'text-slate-900') + ' font-bold' : 'text-slate-600'} leading-tight`}>
+                                   {log.message}: {log.details}
+                                 </span>
+                               )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ))}
                 </div>
               </div>
               
