@@ -564,7 +564,7 @@ const App: React.FC = () => {
   const samples = [
     { label: "Only RAG", prompt: "Perform internal knowledge retrieval via RAG only." },
     { label: "Only MCP", prompt: "Execute external API calls via MCP tools only." },
-    { label: "RAG + MCP", prompt: "Complete hybrid synthesis using both RAG and MCP." }
+    { label: "RAG + MCP", prompt: "Use internal knowledge and external tools to answer this request." }
   ];
 
   return (
