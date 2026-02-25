@@ -485,8 +485,7 @@ const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, o
       </svg>
 
       <div className="absolute top-6 left-6 pointer-events-none z-[100]">
-        <h3 className="text-[10px] font-black text-blue-500 uppercase tracking-[0.4em]">AI Visual workflow</h3>
-        <p className="text-[9px] text-slate-500 font-mono">Stage-by-Stage visuals</p>
+        <h3 className="text-[10px] font-black text-blue-500 uppercase tracking-[0.4em]">AI Request Flow</h3>
       </div>
 
       {isFullscreen && (
