@@ -604,12 +604,12 @@ const App: React.FC = () => {
     <div className={`flex flex-col h-screen ${isDarkMode ? 'bg-[#020617] text-slate-200' : 'bg-slate-50 text-slate-700'} overflow-hidden font-sans selection:bg-blue-500/30`}>
       <header className={`flex justify-between items-center px-10 py-6 border-b ${isDarkMode ? 'border-slate-800/50 bg-[#080c14]/90' : 'border-slate-200 bg-white/90'} backdrop-blur-2xl shrink-0 z-20`}>
         <div className="flex items-center gap-5">
-          <div className="w-12 h-12 rounded-2xl bg-transparent flex items-center justify-center border-2 border-blue-500/70 group">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="group-hover:scale-110 transition-transform">
+          <div className={`w-12 h-12 rounded-2xl bg-transparent flex items-center justify-center border-2 border-blue-500/70 group ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="group-hover:scale-110 transition-transform">
               <rect x="5" y="7" width="14" height="12" rx="3" />
               <path d="M12 4v3" />
-              <circle cx="9" cy="12" r="1.2" fill="white" stroke="none" />
-              <circle cx="15" cy="12" r="1.2" fill="white" stroke="none" />
+              <circle cx="9" cy="12" r="1.2" fill="currentColor" stroke="none" />
+              <circle cx="15" cy="12" r="1.2" fill="currentColor" stroke="none" />
               <path d="M9 16h6" />
               <path d="M5 11H3" />
               <path d="M21 11h-2" />
@@ -1013,7 +1013,7 @@ const App: React.FC = () => {
           {!isTelemetryCollapsed && (
             <div className={`flex-1 flex divide-x ${isDarkMode ? 'divide-slate-800/30' : 'divide-slate-200'} overflow-hidden`}>
               <div className="flex-[4] p-5 flex flex-col overflow-hidden">
-                <div className="flex-1 overflow-y-auto space-y-4 pr-3 custom-scrollbar font-mono text-xs" ref={scrollRef}>
+                <div className="flex-1 overflow-y-auto space-y-4 pr-3 custom-scrollbar font-mono text-sm" ref={scrollRef}>
                   {[...logRuns].reverse().map((run, runIndex) => (
                     <div key={`run-${runIndex}`} className="space-y-2.5">
                       {run.map((log) => {
@@ -1024,17 +1024,17 @@ const App: React.FC = () => {
                             key={log.id}
                             className={`group/log flex gap-4 items-start animate-in fade-in slide-in-from-left-4 duration-500 border-l-2 pl-2 transition-colors relative ${highlightedLogId === log.id ? (isDarkMode ? 'border-blue-400 bg-blue-500/10 shadow-[0_0_12px_rgba(59,130,246,0.25)] animate-[pulse_1.1s_ease-in-out_infinite]' : 'border-blue-500 bg-blue-50 shadow-[0_0_12px_rgba(59,130,246,0.2)] animate-[pulse_1.1s_ease-in-out_infinite]') : 'border-transparent hover:border-blue-500/30'}`}
                           >
-                            <span className="text-slate-700 font-black tabular-nums shrink-0 uppercase w-12 tracking-tighter">
+                            <span className="text-slate-700 font-black tabular-nums shrink-0 uppercase w-12 tracking-tighter text-sm">
                               {log.timestamp.split(' ')[0]}
                             </span>
                             <div className="flex-1">
                                {isExec ? (
                                  <div className="flex justify-between items-start pr-12">
                                    <div className="flex flex-col gap-0.5">
-                                     <div className="text-blue-400 font-black uppercase tracking-widest text-[10px]">
+                                     <div className="text-blue-400 font-black uppercase tracking-widest text-xs">
                                        {log.source} → {log.destination}
                                      </div>
-                                     <div className="text-slate-500 leading-tight text-xs">
+                                     <div className="text-slate-500 leading-tight text-sm">
                                        {log.details}
                                      </div>
                                    </div>
