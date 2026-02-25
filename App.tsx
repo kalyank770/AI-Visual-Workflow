@@ -70,6 +70,13 @@ const App: React.FC = () => {
   const [isDarkMode, setIsDarkMode] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const hasKeys = useMemo(() => hasAnyApiKeys(), []);
+  const componentSubtitles: Record<string, string> = {
+    LG: 'Decision Engine',
+    LLM: 'Text Generator (Brain)',
+    VDB: 'Long-Term Memory',
+    MCP: 'Tool Access Layer',
+    RAG: 'Search System'
+  };
   const activeStepMeta = STEP_METADATA[state.currentStep];
   const activeComponentId = activeStepMeta?.targetId || activeStepMeta?.sourceId;
   const activeComponentName = activeComponentId ? ARCHITECTURE_COMPONENTS[activeComponentId]?.name : null;
@@ -594,12 +601,6 @@ const App: React.FC = () => {
     setLoadingInsight(false);
   };
 
-  const samples = [
-    { label: "Only RAG", prompt: "Perform internal knowledge retrieval via RAG only." },
-    { label: "Only MCP", prompt: "Execute external API calls via MCP tools only." },
-    { label: "RAG + MCP", prompt: "Use internal knowledge and external tools to answer this request." }
-  ];
-
   return (
     <div className={`flex flex-col h-screen ${isDarkMode ? 'bg-[#020617] text-slate-200' : 'bg-slate-50 text-slate-700'} overflow-hidden font-sans selection:bg-blue-500/30`}>
       <header className={`flex justify-between items-center px-10 py-6 border-b ${isDarkMode ? 'border-slate-800/50 bg-[#080c14]/90' : 'border-slate-200 bg-white/90'} backdrop-blur-2xl shrink-0 z-20`}>
@@ -629,18 +630,6 @@ const App: React.FC = () => {
         </div>
         
         <div className="flex items-center gap-4">
-          <div className="hidden lg:flex items-center gap-2 mr-4">
-            {samples.map((s) => (
-              <button
-                key={s.label}
-                onClick={() => runSimulation(s.prompt)}
-                disabled={isSimulating}
-                className={`px-3 py-1.5 rounded-lg border ${isDarkMode ? 'border-slate-800 bg-slate-900/40 text-slate-400 hover:text-white' : 'border-slate-200 bg-white text-slate-500 hover:text-slate-900 hover:border-slate-300'} text-[9px] font-bold uppercase tracking-widest hover:border-blue-500/50 transition-all disabled:opacity-50`}
-              >
-                {s.label}
-              </button>
-            ))}
-          </div>
 
           <input
             type="text"
@@ -821,19 +810,6 @@ const App: React.FC = () => {
                     </p>
                   </div>
 
-                  <div className={`p-4 rounded-2xl ${activeLogicPanel.bgColor} border ${activeLogicPanel.borderColor}`}>
-                     <div className="flex items-start gap-3">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={activeLogicPanel.color}>
-                           <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
-                        </svg>
-                        <div>
-                           <h4 className={`text-xs font-black uppercase tracking-widest mb-1 ${activeLogicPanel.color}`}>Performance Profile</h4>
-                           <p className="text-xs text-slate-400 leading-relaxed">
-                              Optimized for specific latency and data privacy requirements tailored to this architectural configuration.
-                           </p>
-                        </div>
-                     </div>
-                  </div>
                 </div>
 
                 <div className={`mt-8 pt-6 border-t ${isDarkMode ? 'border-white/5' : 'border-slate-200'} flex justify-between items-center`}>
@@ -864,6 +840,11 @@ const App: React.FC = () => {
                   <div>
                     <h2 className="text-[9px] font-black uppercase tracking-[0.3em] text-blue-500/80 mb-2">Component</h2>
                     <h3 className={`text-xl font-black ${isDarkMode ? 'text-white' : 'text-slate-900'} leading-none`}>{ARCHITECTURE_COMPONENTS[selectedNode]?.name}</h3>
+                    {componentSubtitles[selectedNode] && (
+                      <p className={`text-[10px] font-black uppercase tracking-[0.2em] mt-2 ${isDarkMode ? 'text-blue-400/80' : 'text-blue-600/80'}`}>
+                        {componentSubtitles[selectedNode]}
+                      </p>
+                    )}
                   </div>
                   <button onClick={() => setSelectedNode(null)} className={`p-2 ${isDarkMode ? 'hover:bg-white/10 text-slate-500 hover:text-white' : 'hover:bg-slate-100 text-slate-400 hover:text-slate-800'} rounded-xl transition-colors`}>
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 6L6 18M6 6l12 12"/></svg>
