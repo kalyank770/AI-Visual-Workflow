@@ -604,21 +604,27 @@ const App: React.FC = () => {
     <div className={`flex flex-col h-screen ${isDarkMode ? 'bg-[#020617] text-slate-200' : 'bg-slate-50 text-slate-700'} overflow-hidden font-sans selection:bg-blue-500/30`}>
       <header className={`flex justify-between items-center px-10 py-6 border-b ${isDarkMode ? 'border-slate-800/50 bg-[#080c14]/90' : 'border-slate-200 bg-white/90'} backdrop-blur-2xl shrink-0 z-20`}>
         <div className="flex items-center gap-5">
-          <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-700 flex items-center justify-center shadow-[0_0_20px_rgba(37,99,235,0.15)] border border-white/5 group">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" className="group-hover:scale-110 transition-transform">
-              <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+          <div className="w-12 h-12 rounded-2xl bg-transparent flex items-center justify-center border-2 border-blue-500/70 group">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="group-hover:scale-110 transition-transform">
+              <rect x="5" y="7" width="14" height="12" rx="3" />
+              <path d="M12 4v3" />
+              <circle cx="9" cy="12" r="1.2" fill="white" stroke="none" />
+              <circle cx="15" cy="12" r="1.2" fill="white" stroke="none" />
+              <path d="M9 16h6" />
+              <path d="M5 11H3" />
+              <path d="M21 11h-2" />
             </svg>
           </div>
           <div>
             <h1 className={`text-xl font-black tracking-tight ${isDarkMode ? 'text-white' : 'text-slate-900'} uppercase italic leading-tight`}>AI Flow <span className="text-blue-500 font-light">Visualizer</span></h1>
-            <div className="flex items-center gap-2 mt-1">
-              {isSimulating && (
+            {isSimulating && (
+              <div className="flex items-center gap-2 mt-1">
                 <div className="flex items-center gap-1.5 px-2 py-0.5 bg-emerald-500/10 border border-emerald-500/20 rounded-full animate-pulse">
                   <div className="w-1 h-1 bg-emerald-500 rounded-full" />
                   <span className="text-[9px] font-bold text-emerald-400 uppercase">{isPaused ? 'Paused' : 'Synchronizing'}</span>
                 </div>
-              )}
-            </div>
+              </div>
+            )}
           </div>
         </div>
         
