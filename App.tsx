@@ -612,7 +612,6 @@ const App: React.FC = () => {
           <div>
             <h1 className={`text-xl font-black tracking-tight ${isDarkMode ? 'text-white' : 'text-slate-900'} uppercase italic leading-tight`}>AI Flow <span className="text-blue-500 font-light">Visualizer</span></h1>
             <div className="flex items-center gap-2 mt-1">
-              <span className={`text-[9px] font-black ${isDarkMode ? 'bg-blue-500/10 text-blue-500 border-blue-500/20' : 'bg-blue-100 text-blue-600 border-blue-200'} px-2 py-0.5 rounded-full border uppercase tracking-[0.1em]`}>Stateful Hub</span>
               {isSimulating && (
                 <div className="flex items-center gap-1.5 px-2 py-0.5 bg-emerald-500/10 border border-emerald-500/20 rounded-full animate-pulse">
                   <div className="w-1 h-1 bg-emerald-500 rounded-full" />
