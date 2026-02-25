@@ -78,7 +78,7 @@ const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, o
     { id: 'UI', label: 'User Interface', icon: '📱', x: 50, y: 450, color: '#3b82f6' },
     { id: 'LG', label: 'LanGraph\nOrchestrator', icon: '⚡', x: 500, y: 450, color: '#8b5cf6' },
     { id: 'LLM', label: 'LLM', icon: '🧠', x: 1000, y: 780, color: '#ec4899' }, // Moved to bottom row
-    { id: 'RAG', label: 'RAG Pipeline', icon: '🔄', x: 500, y: 150, color: '#10b981' },
+    { id: 'RAG', label: 'Retrieval\nNode', icon: '🔎', x: 500, y: 150, color: '#10b981' },
     { id: 'VDB', label: 'Vector DB', icon: '🗄️', x: 950, y: 150, color: '#059669' },
     { id: 'MCP', label: 'MCP Server', icon: '🛠️', x: 500, y: 780, color: '#f59e0b' },
     { id: 'OUT', label: 'Final Output', icon: '📤', x: 1450, y: 450, color: '#06b6d4' },
@@ -200,6 +200,41 @@ const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, o
         </defs>
 
         <g transform={`translate(${transform.x}, ${transform.y}) scale(${transform.scale})`}>
+          {/* RAG pipeline boundary: Retrieval Node + Vector DB */}
+          <g className="pointer-events-none">
+            <rect
+              x={330}
+              y={20}
+              width={800}
+              height={260}
+              rx={18}
+              fill="none"
+              stroke="#3b82f6"
+              strokeWidth={2}
+              strokeDasharray="8 8"
+              opacity={0.6}
+            />
+            <rect
+              x={610}
+              y={10}
+              width={240}
+              height={26}
+              rx={6}
+              fill={isDarkMode ? "#030712" : "#f8fafc"}
+            />
+            <text
+              x={730}
+              y={28}
+              textAnchor="middle"
+              fill="#3b82f6"
+              fontSize="16"
+              fontWeight="800"
+              letterSpacing="0.18em"
+              className="uppercase"
+            >
+              RAG Pipeline
+            </text>
+          </g>
           {/* Render All Traces for 2-way Visibility with White Color and Arrows */}
           {traces.map((trace) => {
             const isActive = activeTraceId === trace.id;

@@ -83,9 +83,9 @@ export const ARCHITECTURE_COMPONENTS: Record<string, ComponentInfo & { internalD
     }
   },
   RAG: {
-    name: 'RAG Pipeline',
-    role: 'Retrieval Logic',
-    description: 'The processing layer that handles query expansion, reranking, and contextualizing retrieved documents.',
+    name: 'Retrieval Node',
+    role: 'Retriever',
+    description: 'Prepares vector queries, expands intent, and reranks results before handing context back to the graph.',
     techStack: ['LangChain', 'LlamaIndex'],
     internalComponents: ['Expander', 'Hybrid Search', 'Re-ranker'],
     internalDetails: [
@@ -210,15 +210,15 @@ export const STEP_METADATA: Record<WorkflowStep, { label: string; details: strin
     transformedData: { steps: ["INTENT_RECOG", "CONTEXT_RETRIEVAL", "TOOL_EXECUTION"] }
   },
   [WorkflowStep.LG_TO_RAG]: { 
-    label: 'RAG Pipeline', 
-    details: 'Extracting Keywords: "{keywords}" → Generating Vector Query', 
+    label: 'Retrieval Node', 
+    details: 'Extracting Keywords: "{keywords}" → Preparing Vector Query', 
     sourceId: 'LG', 
     targetId: 'RAG',
     inputData: { topic: "{topic}" },
     transformedData: { task: "CONTEXT_RETRIEVAL", filter: { recent: true } }
   },
   [WorkflowStep.RAG_TO_VDB]: { 
-    label: 'VDB Search', 
+    label: 'Vector DB Search', 
     details: 'Converting "{keywords}" → Vector Embedding [0.12, -0.98, 0.45...]', 
     sourceId: 'RAG', 
     targetId: 'VDB',
@@ -226,7 +226,7 @@ export const STEP_METADATA: Record<WorkflowStep, { label: string; details: strin
     transformedData: { search_params: { top_k: 3, metric: "cosine" } }
   },
   [WorkflowStep.VDB_TO_RAG]: { 
-    label: 'Data Retrieval', 
+    label: 'Retrieved Chunks', 
     details: 'Found Matches: "{doc1}" (Score: 0.92) & "{doc2}"', 
     sourceId: 'VDB', 
     targetId: 'RAG',
@@ -234,7 +234,7 @@ export const STEP_METADATA: Record<WorkflowStep, { label: string; details: strin
     transformedData: { documents: ["{doc1}", "{doc2}"] }
   },
   [WorkflowStep.RAG_TO_LG]: { 
-    label: 'RAG Finalized', 
+    label: 'Retrieval Finalized', 
     details: 'Context Block Created: "Retrieved knowledge about {topic}..."', 
     sourceId: 'RAG', 
     targetId: 'LG',

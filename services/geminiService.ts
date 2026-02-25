@@ -271,10 +271,10 @@ const MOCK_INSIGHTS: Record<string, string> = {
 * **Security**: Input/Output guardrails (e.g., LlamaGuard) are critical here to scrub PII and prevent jailbreaks before the model processes data.
 * **Agentic Role**: The "Prefrontal Cortex". It plans the execution path, decomposes complex user goals into atomic steps, and reflects on tool outputs to determine if the task is complete.`,
   
-  "RAG Pipeline": `### 🔄 Component Analysis: RAG Pipeline
-* **Scalability**: Asynchronous ingestion using queues (Kafka/SQS) ensures the vector index updates don't block query traffic.
-* **Security**: Document-level access control (ACLs) must be respected during retrieval. Vector chunks should inherit the permissions of their source documents.
-* **Agentic Role**: Provides "Long-term Memory". It grounds the agent's hallucinations by retrieving factual context, allowing the agent to "consult" a library before answering.`,
+  "Retrieval Node": `### 🔎 Component Analysis: Retrieval Node
+* **Scalability**: Supports parallel query expansion and reranking to keep latency low before hitting the vector store.
+* **Security**: Enforces document-level access control (ACLs) during retrieval. Retrieved chunks inherit permissions from their source documents.
+* **Agentic Role**: Provides "Long-term Memory" by orchestrating retrieval so the agent can ground responses before synthesis.`,
   
   "Vector Database": `### 🗄️ Component Analysis: Vector Store
 * **Scalability**: Distributed HNSW indexes allow for billion-scale vector search with sub-100ms latency.

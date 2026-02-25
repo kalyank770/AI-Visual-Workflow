@@ -119,7 +119,7 @@ const App: React.FC = () => {
       id: 'rag-only',
       title: 'Only RAG Flow Path',
       description: 'Targeted for proprietary knowledge retrieval. Skips external MCP to maintain data gravity.',
-      path: 'UI → LG → RAG → VDB',
+      path: 'UI → LG → Retrieval → VDB',
       details: 'This architectural pattern prioritizes data sovereignty and internal knowledge base retrieval. It bypasses external tool execution (MCP) to ensure that sensitive data remains within the controlled environment. Ideal for answering questions based solely on indexed documentation.',
       color: 'text-blue-400',
       borderColor: 'border-blue-500/20',
@@ -139,7 +139,7 @@ const App: React.FC = () => {
       id: 'hybrid',
       title: 'Hybrid RAG + MCP Path',
       description: 'The optimal agentic cycle. Combines retrieved context with real-time tool execution.',
-      path: 'UI → LG → RAG → MCP → LG',
+      path: 'UI → LG → Retrieval → VDB → LG → MCP → LG',
       details: 'This is the most comprehensive pattern, leveraging both internal knowledge (RAG) for context and external tools (MCP) for action. It enables complex reasoning where the agent first retrieves relevant policy or history, then uses that information to parameterize external API calls.',
       color: 'text-emerald-400',
       borderColor: 'border-emerald-500/20',
@@ -213,7 +213,7 @@ const App: React.FC = () => {
         simpleTransformation = `LLM Output → { plan: ["Identify Intent", "Retrieve Context", "Execute Tools"] }`;
         break;
       case WorkflowStep.LG_TO_RAG:
-        simpleTransformation = `Plan["Retrieve"] → { query: "keywords from ${shortPrompt}" }`;
+        simpleTransformation = `Plan["Retrieve"] → Retrieval_Node({ query: "keywords from ${shortPrompt}" })`;
         break;
       case WorkflowStep.RAG_TO_VDB:
         simpleTransformation = `{ query: "keywords..." } → Vector_Embedding[0.82, -0.41, 0.19, ...]`;
@@ -415,7 +415,7 @@ const App: React.FC = () => {
     if (isRagOnly) {
       // RAG Only
       path = [...path, WorkflowStep.LG_TO_RAG, WorkflowStep.RAG_TO_VDB, WorkflowStep.VDB_TO_RAG, WorkflowStep.RAG_TO_LG];
-      reasoningText = "Route: RAG ONLY\n\n• User explicitly requested internal knowledge.\n• Accessing Vector DB for context.\n• Skipping external tools.";
+      reasoningText = "Route: RAG ONLY\n\n• User explicitly requested internal knowledge.\n• Routing through Retrieval Node and Vector DB.\n• Skipping external tools.";
     } else if (isMath) {
       // MCP Only for verified computation
       path = [...path, WorkflowStep.LG_TO_MCP, WorkflowStep.MCP_TO_LG];
@@ -442,7 +442,7 @@ const App: React.FC = () => {
     } else {
       // Hybrid (Default for complex)
       path = [...path, WorkflowStep.LG_TO_RAG, WorkflowStep.RAG_TO_VDB, WorkflowStep.VDB_TO_RAG, WorkflowStep.RAG_TO_LG, WorkflowStep.LG_TO_MCP, WorkflowStep.MCP_TO_LG];
-      reasoningText = "Route: HYBRID (RAG + MCP)\n\n• Complex intent detected.\n• Retrieving context from Vector DB.\n• Executing external tools for real-time data.\n• Synthesizing full response.";
+      reasoningText = "Route: HYBRID (RAG + MCP)\n\n• Complex intent detected.\n• Retrieving context via Retrieval Node + Vector DB.\n• Executing external tools for real-time data.\n• Synthesizing full response.";
     }
 
     const handshakeId = `handshake_${Date.now()}`;
