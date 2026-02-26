@@ -249,7 +249,24 @@ export async function runToolsForQuery(userPrompt: string): Promise<string[]> {
   }
 
   // ── Dictionary / Define Detection ──
-  if (lower.includes("define") || lower.includes("meaning of") || lower.includes("definition") || lower.includes("what does") && lower.includes("mean")) {
+  // Catches: "define X", "meaning of X", "X meaning?", "X means?", "what does X mean",
+  //          "synonym of X", "antonym of X", "definition of X", "spell X", "pronounce X"
+  const isDictionaryQuery = (
+    lower.includes("define") ||
+    lower.includes("meaning of") ||
+    lower.includes("definition") ||
+    lower.includes("dictionary") ||
+    lower.includes("synonym") ||
+    lower.includes("antonym") ||
+    lower.includes("pronounce") ||
+    lower.includes("pronunciation") ||
+    lower.includes("spell") ||
+    lower.includes("spelling") ||
+    (lower.includes("what does") && lower.includes("mean")) ||
+    /\b\w+\s+means?\??\s*$/i.test(lower) ||   // "fabulous means?"
+    /\b\w+\s+meaning\??\s*$/i.test(lower)      // "fabulous meaning?"
+  );
+  if (isDictionaryQuery) {
     const word = extractWord(userPrompt);
     if (word) {
       const defData = await getDictionary(word);
@@ -683,86 +700,178 @@ export function getWorldTime(timezone: string | null): string {
 }
 
 // ─── Unit Converter ────────────────────────────────────────
-// Handles common conversions — no API needed
+// Base-unit conversion system: every unit maps to a base unit per category.
+// Any unit can convert to any other unit in the same category by going
+// through the base: value → base → target.
+
+// Each entry: [category, baseUnit, factorToBase] or for temperature: special
+interface UnitDef {
+  category: string;
+  base: string;
+  toBase: (v: number) => number;
+  fromBase: (v: number) => number;
+  displayName: string;
+}
+
+const UNIT_DEFS: Record<string, UnitDef> = {
+  // ── Length (base: meter) ──
+  mm:   { category: 'length', base: 'm', toBase: v => v * 0.001,   fromBase: v => v * 1000, displayName: 'mm' },
+  cm:   { category: 'length', base: 'm', toBase: v => v * 0.01,    fromBase: v => v * 100, displayName: 'cm' },
+  m:    { category: 'length', base: 'm', toBase: v => v,           fromBase: v => v, displayName: 'm' },
+  km:   { category: 'length', base: 'm', toBase: v => v * 1000,    fromBase: v => v / 1000, displayName: 'km' },
+  in:   { category: 'length', base: 'm', toBase: v => v * 0.0254,  fromBase: v => v / 0.0254, displayName: 'in' },
+  ft:   { category: 'length', base: 'm', toBase: v => v * 0.3048,  fromBase: v => v / 0.3048, displayName: 'ft' },
+  yd:   { category: 'length', base: 'm', toBase: v => v * 0.9144,  fromBase: v => v / 0.9144, displayName: 'yd' },
+  mi:   { category: 'length', base: 'm', toBase: v => v * 1609.344,fromBase: v => v / 1609.344, displayName: 'mi' },
+  nmi:  { category: 'length', base: 'm', toBase: v => v * 1852,    fromBase: v => v / 1852, displayName: 'nmi' },
+
+  // ── Mass (base: gram) ──
+  mg:   { category: 'mass', base: 'g', toBase: v => v * 0.001,    fromBase: v => v * 1000, displayName: 'mg' },
+  g:    { category: 'mass', base: 'g', toBase: v => v,            fromBase: v => v, displayName: 'g' },
+  kg:   { category: 'mass', base: 'g', toBase: v => v * 1000,     fromBase: v => v / 1000, displayName: 'kg' },
+  oz:   { category: 'mass', base: 'g', toBase: v => v * 28.3495,  fromBase: v => v / 28.3495, displayName: 'oz' },
+  lb:   { category: 'mass', base: 'g', toBase: v => v * 453.592,  fromBase: v => v / 453.592, displayName: 'lb' },
+  ton:  { category: 'mass', base: 'g', toBase: v => v * 907185,   fromBase: v => v / 907185, displayName: 'ton' },
+  tonne:{ category: 'mass', base: 'g', toBase: v => v * 1000000,  fromBase: v => v / 1000000, displayName: 'tonne' },
+
+  // ── Volume (base: liter) ──
+  ml:   { category: 'volume', base: 'l', toBase: v => v * 0.001,   fromBase: v => v * 1000, displayName: 'ml' },
+  l:    { category: 'volume', base: 'l', toBase: v => v,           fromBase: v => v, displayName: 'l' },
+  gal:  { category: 'volume', base: 'l', toBase: v => v * 3.78541, fromBase: v => v / 3.78541, displayName: 'gal' },
+  cup:  { category: 'volume', base: 'l', toBase: v => v * 0.236588,fromBase: v => v / 0.236588, displayName: 'cup' },
+  tsp:  { category: 'volume', base: 'l', toBase: v => v * 0.00492892, fromBase: v => v / 0.00492892, displayName: 'tsp' },
+  tbsp: { category: 'volume', base: 'l', toBase: v => v * 0.0147868,  fromBase: v => v / 0.0147868, displayName: 'tbsp' },
+  floz: { category: 'volume', base: 'l', toBase: v => v * 0.0295735,  fromBase: v => v / 0.0295735, displayName: 'fl oz' },
+
+  // ── Temperature (special) ──
+  celsius:    { category: 'temperature', base: 'celsius', toBase: v => v,                 fromBase: v => v, displayName: '°C' },
+  fahrenheit: { category: 'temperature', base: 'celsius', toBase: v => (v - 32) * 5 / 9,  fromBase: v => v * 9 / 5 + 32, displayName: '°F' },
+  kelvin:     { category: 'temperature', base: 'celsius', toBase: v => v - 273.15,        fromBase: v => v + 273.15, displayName: 'K' },
+
+  // ── Speed (base: m/s) ──
+  mph:  { category: 'speed', base: 'ms', toBase: v => v * 0.44704,  fromBase: v => v / 0.44704, displayName: 'mph' },
+  kmh:  { category: 'speed', base: 'ms', toBase: v => v * 0.277778, fromBase: v => v / 0.277778, displayName: 'km/h' },
+  ms:   { category: 'speed', base: 'ms', toBase: v => v,            fromBase: v => v, displayName: 'm/s' },
+  knot: { category: 'speed', base: 'ms', toBase: v => v * 0.514444, fromBase: v => v / 0.514444, displayName: 'knot' },
+
+  // ── Area (base: sq meter) ──
+  sqm:  { category: 'area', base: 'sqm', toBase: v => v,            fromBase: v => v, displayName: 'sq m' },
+  sqft: { category: 'area', base: 'sqm', toBase: v => v * 0.092903, fromBase: v => v / 0.092903, displayName: 'sq ft' },
+  acre: { category: 'area', base: 'sqm', toBase: v => v * 4046.86,  fromBase: v => v / 4046.86, displayName: 'acre' },
+  ha:   { category: 'area', base: 'sqm', toBase: v => v * 10000,    fromBase: v => v / 10000, displayName: 'ha' },
+
+  // ── Digital (base: byte) ──
+  byte: { category: 'digital', base: 'byte', toBase: v => v,              fromBase: v => v, displayName: 'byte' },
+  kb:   { category: 'digital', base: 'byte', toBase: v => v * 1024,       fromBase: v => v / 1024, displayName: 'KB' },
+  mb:   { category: 'digital', base: 'byte', toBase: v => v * 1048576,    fromBase: v => v / 1048576, displayName: 'MB' },
+  gb:   { category: 'digital', base: 'byte', toBase: v => v * 1073741824, fromBase: v => v / 1073741824, displayName: 'GB' },
+  tb:   { category: 'digital', base: 'byte', toBase: v => v * 1099511627776, fromBase: v => v / 1099511627776, displayName: 'TB' },
+};
+
+// Comprehensive alias map → canonical unit key
+const UNIT_ALIASES: Record<string, string> = {
+  // Length
+  mm: 'mm', millimeter: 'mm', millimetre: 'mm', millimeters: 'mm', millimetres: 'mm',
+  cm: 'cm', centimeter: 'cm', centimetre: 'cm', centimeters: 'cm', centimetres: 'cm',
+  cent: 'cm', cents: 'cm',  // "cent" as length unit = centimeter
+  m: 'm', meter: 'm', metre: 'm', meters: 'm', metres: 'm',
+  km: 'km', kilometer: 'km', kilometre: 'km', kilometers: 'km', kilometres: 'km',
+  in: 'in', inch: 'in', inches: 'in', '"': 'in',
+  ft: 'ft', foot: 'ft', feet: 'ft', "'": 'ft',
+  yd: 'yd', yard: 'yd', yards: 'yd',
+  mi: 'mi', mile: 'mi', miles: 'mi',
+  nmi: 'nmi', 'nautical mile': 'nmi', 'nautical miles': 'nmi',
+
+  // Mass
+  mg: 'mg', milligram: 'mg', milligrams: 'mg',
+  g: 'g', gram: 'g', grams: 'g',
+  kg: 'kg', kilogram: 'kg', kilograms: 'kg', kilo: 'kg', kilos: 'kg',
+  oz: 'oz', ounce: 'oz', ounces: 'oz',
+  lb: 'lb', lbs: 'lb', pound: 'lb', pounds: 'lb',
+  ton: 'ton', tons: 'ton', 'short ton': 'ton',
+  tonne: 'tonne', tonnes: 'tonne', 'metric ton': 'tonne', 'metric tons': 'tonne',
+
+  // Volume
+  ml: 'ml', milliliter: 'ml', millilitre: 'ml', milliliters: 'ml', millilitres: 'ml',
+  l: 'l', liter: 'l', litre: 'l', liters: 'l', litres: 'l',
+  gal: 'gal', gallon: 'gal', gallons: 'gal',
+  cup: 'cup', cups: 'cup',
+  tsp: 'tsp', teaspoon: 'tsp', teaspoons: 'tsp',
+  tbsp: 'tbsp', tablespoon: 'tbsp', tablespoons: 'tbsp',
+  'fl oz': 'floz', floz: 'floz', 'fluid ounce': 'floz', 'fluid ounces': 'floz',
+
+  // Temperature
+  '°c': 'celsius', celsius: 'celsius', centigrade: 'celsius',
+  '°f': 'fahrenheit', fahrenheit: 'fahrenheit',
+  k: 'kelvin', kelvin: 'kelvin',
+
+  // Speed
+  mph: 'mph',
+  'km/h': 'kmh', kmh: 'kmh', kph: 'kmh', 'kmph': 'kmh',
+  'm/s': 'ms', 'ms': 'ms',
+  knot: 'knot', knots: 'knot',
+
+  // Area
+  'sq m': 'sqm', 'sq meter': 'sqm', 'sq meters': 'sqm', 'square meter': 'sqm', 'square meters': 'sqm', 'square metre': 'sqm', 'square metres': 'sqm', sqm: 'sqm',
+  'sq ft': 'sqft', 'sq feet': 'sqft', 'square feet': 'sqft', 'square foot': 'sqft', sqft: 'sqft',
+  acre: 'acre', acres: 'acre',
+  ha: 'ha', hectare: 'ha', hectares: 'ha',
+
+  // Digital
+  byte: 'byte', bytes: 'byte',
+  kb: 'kb', kilobyte: 'kb', kilobytes: 'kb',
+  mb: 'mb', megabyte: 'mb', megabytes: 'mb',
+  gb: 'gb', gigabyte: 'gb', gigabytes: 'gb',
+  tb: 'tb', terabyte: 'tb', terabytes: 'tb',
+};
+
+function normalizeUnit(u: string): string | null {
+  const unit = u.toLowerCase().trim();
+  return UNIT_ALIASES[unit] || null;
+}
+
+function convert(value: number, from: string, to: string): number | null {
+  const fromDef = UNIT_DEFS[from];
+  const toDef = UNIT_DEFS[to];
+  if (!fromDef || !toDef) return null;
+  if (fromDef.category !== toDef.category) return null; // Can't convert across categories
+
+  // Convert: source → base → target
+  const baseValue = fromDef.toBase(value);
+  return toDef.fromBase(baseValue);
+}
 
 function detectUnitConversion(prompt: string): string | null {
   const lower = prompt.toLowerCase();
 
-  // Pattern: "X unit to unit" or "convert X unit to unit"
+  // General patterns: "X unit to unit" or "convert X unit to unit"
+  // Handles both "1 km to cm" and "1km to cm" (no space before unit)
   const patterns = [
-    /(\d+\.?\d*)\s*(km|kilometer|kilometres?|miles?|mi)\s+(?:to|in|into)\s+(km|kilometer|kilometres?|miles?|mi)/i,
-    /(\d+\.?\d*)\s*(kg|kilogram|kilograms?|lbs?|pounds?)\s+(?:to|in|into)\s+(kg|kilogram|kilograms?|lbs?|pounds?)/i,
-    /(\d+\.?\d*)\s*(°?[fc]|fahrenheit|celsius|centigrade)\s+(?:to|in|into)\s+(°?[fc]|fahrenheit|celsius|centigrade)/i,
-    /(\d+\.?\d*)\s*(meters?|metres?|m|feet|ft|foot)\s+(?:to|in|into)\s+(meters?|metres?|m|feet|ft|foot)/i,
-    /(\d+\.?\d*)\s*(liters?|litres?|l|gallons?|gal)\s+(?:to|in|into)\s+(liters?|litres?|l|gallons?|gal)/i,
-    /(\d+\.?\d*)\s*(cm|centimeters?|centimetres?|inches?|in)\s+(?:to|in|into)\s+(cm|centimeters?|centimetres?|inches?|in)/i,
-    /(\d+\.?\d*)\s*(oz|ounces?|grams?|g)\s+(?:to|in|into)\s+(oz|ounces?|grams?|g)/i,
-    /(\d+\.?\d*)\s*(mph|km\/h|kmh|kph)\s+(?:to|in|into)\s+(mph|km\/h|kmh|kph)/i,
-    /convert\s+(\d+\.?\d*)\s*(.*?)\s+(?:to|in|into)\s+(.*?)(?:\?|$)/i,
+    /convert\s+(\d+\.?\d*)\s+(.*?)\s+(?:to|in|into)\s+(.*?)(?:\?|!|\.|$)/i,
+    /(\d+\.?\d*)\s*((?:sq(?:uare)?\s+)?[a-z\/°"']+(?:\s+[a-z]+)?)\s+(?:to|in|into)\s+((?:sq(?:uare)?\s+)?[a-z\/°"']+(?:\s+[a-z]+)?)(?:\?|!|\.|$)?/i,
   ];
 
   for (const pattern of patterns) {
     const match = lower.match(pattern);
     if (match) {
       const value = parseFloat(match[1]);
-      const from = normalizeUnit(match[2]);
-      const to = normalizeUnit(match[3]);
+      const fromRaw = match[2].trim();
+      const toRaw = match[3].trim();
+      const from = normalizeUnit(fromRaw);
+      const to = normalizeUnit(toRaw);
       if (from && to && from !== to) {
         const result = convert(value, from, to);
         if (result !== null) {
-          return `${value} ${from} = ${result.toFixed(4)} ${to}`;
+          const fromDef = UNIT_DEFS[from];
+          const toDef = UNIT_DEFS[to];
+          const formatted = result % 1 === 0 ? result.toString() : result.toFixed(4).replace(/0+$/, '').replace(/\.$/, '');
+          return `${value} ${fromDef?.displayName ?? from} = ${formatted} ${toDef?.displayName ?? to}`;
         }
       }
     }
   }
 
   return null;
-}
-
-function normalizeUnit(u: string): string | null {
-  const unit = u.toLowerCase().trim().replace(/s$/, "");
-  const map: Record<string, string> = {
-    "km": "km", "kilometer": "km", "kilometre": "km",
-    "mi": "miles", "mile": "miles",
-    "kg": "kg", "kilogram": "kg",
-    "lb": "lbs", "pound": "lbs",
-    "°c": "celsius", "c": "celsius", "celsius": "celsius", "centigrade": "celsius",
-    "°f": "fahrenheit", "f": "fahrenheit", "fahrenheit": "fahrenheit",
-    "meter": "m", "metre": "m", "m": "m",
-    "ft": "ft", "feet": "ft", "foot": "ft",
-    "liter": "l", "litre": "l", "l": "l",
-    "gallon": "gal", "gal": "gal",
-    "cm": "cm", "centimeter": "cm", "centimetre": "cm",
-    "inch": "in", "inche": "in", "in": "in",
-    "oz": "oz", "ounce": "oz",
-    "gram": "g", "g": "g",
-    "mph": "mph",
-    "km/h": "kmh", "kmh": "kmh", "kph": "kmh",
-  };
-  return map[unit] || null;
-}
-
-function convert(value: number, from: string, to: string): number | null {
-  const conversions: Record<string, Record<string, (v: number) => number>> = {
-    km:   { miles: (v) => v * 0.621371 },
-    miles: { km: (v) => v * 1.60934 },
-    kg:   { lbs: (v) => v * 2.20462 },
-    lbs:  { kg: (v) => v * 0.453592 },
-    celsius: { fahrenheit: (v) => v * 9 / 5 + 32 },
-    fahrenheit: { celsius: (v) => (v - 32) * 5 / 9 },
-    m:    { ft: (v) => v * 3.28084 },
-    ft:   { m: (v) => v * 0.3048 },
-    l:    { gal: (v) => v * 0.264172 },
-    gal:  { l: (v) => v * 3.78541 },
-    cm:   { in: (v) => v * 0.393701 },
-    in:   { cm: (v) => v * 2.54 },
-    oz:   { g: (v) => v * 28.3495 },
-    g:    { oz: (v) => v * 0.035274 },
-    mph:  { kmh: (v) => v * 1.60934 },
-    kmh:  { mph: (v) => v * 0.621371 },
-  };
-
-  return conversions[from]?.[to]?.(value) ?? null;
 }
 
 // ─── Currency Conversion (Frankfurter API — ECB rates) ────
@@ -1170,6 +1279,12 @@ function extractWord(prompt: string): string | null {
     /(?:define|definition\s+of|meaning\s+of)\s+[""']?(\w+)[""']?/i,
     /what\s+does\s+[""']?(\w+)[""']?\s+mean/i,
     /what\s+is\s+(?:the\s+meaning\s+of\s+)?[""']?(\w+)[""']?/i,
+    /(?:synonym|antonym|synonyms?|antonyms?)\s+(?:of|for)\s+[""']?(\w+)[""']?/i,
+    /(?:pronounce|pronunciation\s+of|spell|spelling\s+of)\s+[""']?(\w+)[""']?/i,
+    /[""']?(\w+)[""']?\s+means?\??\s*$/i,      // "fabulous means?"
+    /[""']?(\w+)[""']?\s+meaning\??\s*$/i,      // "fabulous meaning?"
+    /[""']?(\w+)[""']?\s+definition\??\s*$/i,   // "fabulous definition?"
+    /[""']?(\w+)[""']?\s+synonyms?\??\s*$/i,    // "fabulous synonyms?"
   ];
   for (const pattern of patterns) {
     const match = prompt.match(pattern);

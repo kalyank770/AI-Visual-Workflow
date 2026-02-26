@@ -430,7 +430,7 @@ const App: React.FC = () => {
     // Catches "who is", "what is", "how does", "why", "explain", "tell me about", etc.
     const needsWebSearch = !isRagOnly && !isMcpOnly && (
       /^(who|what|where|when|why|how|which|whose|whom)\b/.test(promptLower) ||
-      /\b(who is|who was|who are|what is|what are|what was|what does|how to|how does|how do|how is|how are|how many|how much|why is|why do|why does|why are|tell me|explain|describe|define|meaning of|difference between|compare|list of|history of|founder of|ceo of|president of|capital of|population of|largest|smallest|tallest|oldest|newest|best|worst|fastest)\b/.test(promptLower)
+      /\b(who is|who was|who are|what is|what are|what was|what does|how to|how does|how do|how is|how are|how many|how much|why is|why do|why does|why are|tell me|explain|describe|define|meaning of|meaning\??$|means\??$|synonym|antonym|definition|dictionary|pronounce|pronunciation|spell|spelling|difference between|compare|list of|history of|founder of|ceo of|president of|capital of|population of|largest|smallest|tallest|oldest|newest|best|worst|fastest)\b/.test(promptLower)
     );
     
     // 2. Direct simple query detection (Greetings)
@@ -439,7 +439,7 @@ const App: React.FC = () => {
       /^[\d\s\+\-\*\/\(\)\.]+$/.test(activePrompt) || // Pure math
       /^\d+[\+\-\*\/]\d+/.test(activePrompt.replace(/\s/g,'')) || // Embedded math
       /\b(convert|conversion|unit|units)\b/.test(promptLower) ||
-      /\b(celsius|fahrenheit|kelvin|km|kilometer|kilometre|miles|mile|meters|metres|feet|foot|inch|inches|kg|kilogram|kilograms|lb|lbs|pound|pounds|liter|litre|liters|litres|gallon|gallons|ml|milliliter|millilitre|milliliters|millilitres|cup|cups|tsp|tbsp|teaspoon|tablespoon|oz|ounce|ounces|sq\s*ft|sq\s*ft\.|sq\s*feet|square\s*feet|sq\s*m|sq\s*meter|square\s*meters|square\s*metres|acre|acres|hectare|hectares|cubic\s*meter|cubic\s*metre|cubic\s*meters|cubic\s*metres|liter|litre|liters|litres|gallon|gallons|cc|cm3|m3)\b/.test(promptLower) ||
+      /(?:^|\b|\d)(celsius|fahrenheit|kelvin|mm|millimeter|millimetre|cm|centimeter|centimetre|cent|cents|meter|metre|meters|metres|km|kilometer|kilometre|inch|inches|in|foot|feet|ft|yard|yards|yd|mile|miles|mi|mg|milligram|gram|grams|kg|kilogram|kilograms|lb|lbs|pound|pounds|oz|ounce|ounces|ton|tons|tonne|tonnes|ml|milliliter|millilitre|liter|litre|liters|litres|gallon|gallons|gal|cup|cups|tsp|tbsp|teaspoon|tablespoon|fl\s*oz|sq\s*ft|square\s*feet|sq\s*m|square\s*meter|acre|acres|hectare|hectares|cc|cm3|m3)(?:\b|\s|\?|$)/.test(promptLower) ||
       /\b(kwh|kilowatt\s*hour|kilowatt\s*hours|btu|btus|watt\s*hour|wh|joule|joules|calorie|calories|kcal)\b/.test(promptLower) ||
       /\b(currency|exchange\s*rate|fx|forex|convert)\b/.test(promptLower) ||
       /\b(timezone|time\s*zone|utc|gmt|offset)\b/.test(promptLower) ||
