@@ -133,26 +133,30 @@ const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, o
   const prevStepRef = useRef<WorkflowStep>(WorkflowStep.IDLE);
   const zoomPhaseRef = useRef<'idle' | 'zooming-out' | 'zooming-in'>('idle');
   const zoomTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lerpSpeedRef = useRef(0.07); // Adaptive: faster for large jumps, slower for step transitions
+  const cinematicJustActivated = useRef(false); // True when fullscreen entered mid-flow
 
   const smoothLerp = useCallback(() => {
     const target = targetTransformRef.current;
     if (!target) return;
 
     setTransform(prev => {
-      const lerpSpeed = 0.07; // Smooth interpolation factor
+      const speed = lerpSpeedRef.current;
       const dx = target.x - prev.x;
       const dy = target.y - prev.y;
       const ds = target.scale - prev.scale;
 
       // Stop when close enough
       if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5 && Math.abs(ds) < 0.001) {
+        // After reaching target, reset to normal speed for subsequent transitions
+        lerpSpeedRef.current = 0.07;
         return target;
       }
 
       return {
-        x: prev.x + dx * lerpSpeed,
-        y: prev.y + dy * lerpSpeed,
-        scale: prev.scale + ds * lerpSpeed,
+        x: prev.x + dx * speed,
+        y: prev.y + dy * speed,
+        scale: prev.scale + ds * speed,
       };
     });
 
@@ -185,6 +189,10 @@ const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, o
     const container = containerRef.current;
     if (!container) return;
 
+    // Detect transition from non-cinematic to cinematic (entering fullscreen mid-flow)
+    if (!cinematicActive.current) {
+      cinematicJustActivated.current = true;
+    }
     cinematicActive.current = true;
     const cw = container.clientWidth;
     const ch = container.clientHeight;
@@ -229,8 +237,18 @@ const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, o
 
     if (zoomTimerRef.current) clearTimeout(zoomTimerRef.current);
 
-    if (stepChanged) {
+    // Detect if we just entered fullscreen mid-flow (cinematic just activated)
+    const justActivated = cinematicJustActivated.current;
+    cinematicJustActivated.current = false;
+
+    if (justActivated) {
+      // Entering fullscreen mid-flow: fast direct zoom-in, no zoom-out phase
+      lerpSpeedRef.current = 0.18; // ~2.5x faster for the initial snap
+      zoomPhaseRef.current = 'zooming-in';
+      startLerp({ x: zoomedX, y: zoomedY, scale: zoomedScale });
+    } else if (stepChanged) {
       // Phase 1: Brief zoom-out
+      lerpSpeedRef.current = 0.07;
       zoomPhaseRef.current = 'zooming-out';
       startLerp({ x: zoomOutX, y: zoomOutY, scale: zoomOutScale });
 

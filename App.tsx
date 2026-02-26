@@ -5,6 +5,7 @@ import { ARCHITECTURE_COMPONENTS, STEP_METADATA } from './constants';
 import AnimatedFlow from './components/AnimatedFlow';
 import { getArchitectInsight, chatWithArchitect, hasAnyApiKeys } from './services/geminiService';
 import { runToolsForQuery } from './services/liveTools';
+import { runRAGPipeline, RAGPipelineResult } from './services/ragService';
 
 const InternalComponentDetail = ({ detail, isDarkMode }: { detail: any, isDarkMode: boolean }) => {
   const [isExpanded, setIsExpanded] = useState(false);
@@ -160,6 +161,7 @@ const App: React.FC = () => {
   const isPausedRef = useRef(isPaused);
   const runIdRef = useRef(0);
   const toolDataRef = useRef<string[]>([]);
+  const ragDataRef = useRef<RAGPipelineResult | null>(null);
   const [activeToolName, setActiveToolName] = useState<string | undefined>(undefined);
 
   useEffect(() => {
@@ -200,6 +202,25 @@ const App: React.FC = () => {
       "kb",
       "sop",
       "handbook",
+      "opentext",
+      "open text",
+      "otex",
+      "otcs",
+      "content server",
+      "documentum",
+      "extended ecm",
+      "xecm",
+      "aviator",
+      "magellan",
+      "exstream",
+      "teamsite",
+      "appworks",
+      "fortify",
+      "arcsight",
+      "netiq",
+      "voltage",
+      "loadrunner",
+      "smax",
     ].some(term => promptLower.includes(term));
     // Direct logic
     const isDirect = !isRagOnly && !isMcpOnly && (
@@ -224,16 +245,37 @@ const App: React.FC = () => {
         simpleTransformation = `LLM Output → { plan: ["Identify Intent", "Retrieve Context", "Execute Tools"] }`;
         break;
       case WorkflowStep.LG_TO_RAG:
-        simpleTransformation = `Plan["Retrieve"] → Retrieval_Node({ query: "keywords from ${shortPrompt}" })`;
+        if (ragDataRef.current) {
+          const rag = ragDataRef.current;
+          simpleTransformation = `RAG_Pipeline({ query: "${shortPrompt}", expanded: [${rag.expandedQueries.map(q => `"${q.slice(0, 30)}"`).join(', ')}], model: "${rag.stats.embeddingModel}" })`;
+        } else {
+          simpleTransformation = `Plan["Retrieve"] → Retrieval_Node({ query: "keywords from ${shortPrompt}" })`;
+        }
         break;
       case WorkflowStep.RAG_TO_VDB:
-        simpleTransformation = `{ query: "keywords..." } → Vector_Embedding[0.82, -0.41, 0.19, ...]`;
+        if (ragDataRef.current) {
+          const rag = ragDataRef.current;
+          simpleTransformation = `Hybrid_Search(${rag.stats.totalChunks} chunks, ${rag.stats.totalDocuments} docs) → ${rag.retrievedChunks.length} candidates in ${rag.stats.searchTimeMs}ms`;
+        } else {
+          simpleTransformation = `{ query: "keywords..." } → Vector_Embedding[0.82, -0.41, 0.19, ...]`;
+        }
         break;
       case WorkflowStep.VDB_TO_RAG:
-        simpleTransformation = `Vector Search → [ "Document_Chunk_A (92%)", "Document_Chunk_B (88%)" ]`;
+        if (ragDataRef.current && ragDataRef.current.retrievedChunks.length > 0) {
+          const rag = ragDataRef.current;
+          const topChunks = rag.retrievedChunks.slice(0, 3).map(r => `"${r.chunk.source}" (${(r.score * 100).toFixed(1)}%)`);
+          simpleTransformation = `Retrieved: [${topChunks.join(', ')}] via ${rag.retrievedChunks[0].method} search`;
+        } else {
+          simpleTransformation = `Vector Search → [ "Document_Chunk_A (92%)", "Document_Chunk_B (88%)" ]`;
+        }
         break;
       case WorkflowStep.RAG_TO_LG:
-        simpleTransformation = `[Docs] → Context_Window("...retrieved content...")`;
+        if (ragDataRef.current && ragDataRef.current.rerankedChunks.length > 0) {
+          const rag = ragDataRef.current;
+          simpleTransformation = `Re-ranked → Top ${rag.rerankedChunks.length} chunks (best: ${(rag.stats.topScore * 100).toFixed(1)}%) → Context_Window(${rag.contextBlock.length} chars)`;
+        } else {
+          simpleTransformation = `[Docs] → Context_Window("...retrieved content...")`;
+        }
         break;
       case WorkflowStep.LG_TO_MCP:
         simpleTransformation = `Plan["Execute"] → API_Call(tool="fetch_data", args={ query: "${shortPrompt}" })`;
@@ -295,12 +337,13 @@ const App: React.FC = () => {
     };
 
     // Define replacements based on mode (Only needed for detailed payload inspectors now)
+    const rag = ragDataRef.current;
     let replacements: Record<string, string> = {
         prompt: activePrompt,
-        keywords: "Extracted Terms",
-        topic: "Subject Matter",
-        doc1: "Document_A.pdf",
-        doc2: "Document_B.pdf",
+        keywords: rag ? rag.expandedQueries.join(", ") : "Extracted Terms",
+        topic: rag && rag.rerankedChunks.length > 0 ? rag.rerankedChunks[0].chunk.source : "Subject Matter",
+        doc1: rag && rag.rerankedChunks.length > 0 ? rag.rerankedChunks[0].chunk.source : "Document_A.pdf",
+        doc2: rag && rag.rerankedChunks.length > 1 ? rag.rerankedChunks[1].chunk.source : "Document_B.pdf",
         tool_name: "Generic_Tool",
         tool_id: "tool_01",
         query: "search_query",
@@ -331,6 +374,28 @@ const App: React.FC = () => {
         ...replacements,
         response_snippet: "Direct Answer Generated.",
       };
+    }
+
+    // Override payload data with real RAG results when available
+    if (rag) {
+      switch (step) {
+        case WorkflowStep.LG_TO_RAG:
+          inputData = { query: activePrompt, expanded_queries: rag.expandedQueries };
+          transformedData = { task: "CONTEXT_RETRIEVAL", embedding_model: rag.stats.embeddingModel, total_chunks: rag.stats.totalChunks, total_docs: rag.stats.totalDocuments };
+          break;
+        case WorkflowStep.RAG_TO_VDB:
+          inputData = { queries: rag.expandedQueries, search_type: "hybrid (vector + BM25)" };
+          transformedData = { search_params: { top_k: rag.retrievedChunks.length, metric: "cosine + RRF", search_time_ms: rag.stats.searchTimeMs } };
+          break;
+        case WorkflowStep.VDB_TO_RAG:
+          inputData = { candidates_found: rag.retrievedChunks.length };
+          transformedData = { documents: rag.retrievedChunks.slice(0, 3).map(r => ({ source: r.chunk.source, score: +(r.score * 100).toFixed(1), method: r.method, preview: r.chunk.content.slice(0, 100) + "..." })) };
+          break;
+        case WorkflowStep.RAG_TO_LG:
+          inputData = rag.rerankedChunks.map(r => ({ source: r.chunk.source, relevance: +(r.score * 100).toFixed(1) + "%" }));
+          transformedData = { context_tokens: rag.contextBlock.length, integrity: "VERIFIED", reranked_count: rag.rerankedChunks.length, top_score: +(rag.stats.topScore * 100).toFixed(1) + "%" };
+          break;
+      }
     }
 
     return {
@@ -392,6 +457,7 @@ const App: React.FC = () => {
     setActivePath([]);
     setActiveModelName("Llama 3.3 70B");
     toolDataRef.current = [];
+    ragDataRef.current = null;
     setActiveToolName(undefined);
   };
 
@@ -400,6 +466,7 @@ const App: React.FC = () => {
     if (!activePrompt.trim() || isSimulating) return;
     const runId = ++runIdRef.current;
     toolDataRef.current = [];
+    ragDataRef.current = null;
     setActiveToolName(undefined);
     
     if (customPrompt) setPrompt(customPrompt);
@@ -419,32 +486,89 @@ const App: React.FC = () => {
 
     const promptLower = activePrompt.toLowerCase();
     
-    // Improved Logic Detection
+    // ─── LangGraph Intent Classification ───────────────────────────────
+    // The orchestrator classifies query intent into categories and routes
+    // to the appropriate pipeline. The priority order is:
+    //   1. Explicit overrides ("rag only", "mcp tools only")
+    //   2. Math/computation → MCP tools
+    //   3. Greetings → Direct LLM
+    //   4. Real-time data needs (stock, weather, news) → MCP (even if OpenText-related)
+    //   5. General web-search questions about OpenText → HYBRID (RAG + MCP)
+    //   6. OpenText product/documentation queries → RAG only
+    //   7. Internal knowledge queries (policy, guide, docs) → RAG only
+    //   8. General knowledge questions → MCP web search
+    //   9. Fallback → Hybrid or Direct LLM
+    //
+    // KEY PRINCIPLE: "who is CEO of opentext?" is a FACTUAL question that
+    // benefits from both RAG context AND live web data. But "how to use
+    // Content Server REST API?" is a DOCUMENTATION question best served
+    // entirely from internal knowledge.
+
     // 1. Explicit overrides
     const isRagOnly = promptLower.includes("rag only");
     const isMcpOnly = promptLower.includes("mcp tools only");
-    const isRagPreferred = /\b(polic(y|ies)|guide(s)?|doc(s|ument(ation)?)?|internal|knowledge(base)?|support|help(desk)?|in\s*house|organization(al)?)\b/.test(promptLower);
-    const needsRealtimeTools = /\b(weather|temperature|forecast|news|latest|stock|price|cap|exchange|rate|currency|live|today|now|traffic|travel\s*time|flight|flights|delay|delays|arrival|departure|gate|crypto|bitcoin|ethereum|fx|forex|score|scores|sports|match|game|standings|schedule|event|events|concert|ticket|tickets|time|date|timezone|shipping|shipment|tracking|delivery|dispatch|courier|logistics|train|rail|platform|seat|availability|booking|pnr|eta|etd)\b/.test(promptLower);
+
+    // 2. OpenText product/documentation query — specific product names & technical terms
+    //    These are best answered from internal docs (RAG)
+    const isOpenTextProductQuery = /\b(otcs|livelink|documentum|content\s*server|extended\s*ecm|xecm|x\s*ecm|core\s*content|exstream|teamsite|appworks|fortify|arcsight|netiq|voltage|encase|data\s*protector|loadrunner|load\s*runner|uft|alm\s*quality|quality\s*center|valueedge|value\s*edge|smax|idol|trading\s*grid|media\s*management|capture\s*center|info\s*archive|axcelerate|legal\s*hold|brava|hightail|enterprise\s*analyzer|cloud\s*edition|magellan)\b/.test(promptLower);
+
+    // 3. General OpenText mention — company name only, no specific product
+    //    "who is CEO of opentext?", "tell me about opentext", "opentext stock price"
+    const isOpenTextGeneral = !isOpenTextProductQuery && /\b(opentext|open\s*text|otex)\b/.test(promptLower);
+
+    // 4. Combined flag for any OpenText reference
+    const isOpenTextRelated = isOpenTextProductQuery || isOpenTextGeneral;
+
+    // 5. Aviator — could be product doc OR general depending on context
+    //    "what is aviator?" → documentation, "aviator REST API" → documentation
+    const isAviatorQuery = /\b(aviator)\b/.test(promptLower);
+    const isOpenTextDocQuery = isOpenTextProductQuery || isAviatorQuery;
+
+    // 6. RAG-preferred (internal knowledge requests — policies, guides, docs)
+    const isRagPreferred = isOpenTextDocQuery || /\b(polic(y|ies)|guide(s)?|doc(s|ument(ation)?)?|internal|knowledge(base)?|support|help(desk)?|in\s*house|organization(al)?)\b/.test(promptLower);
+
+    // 7. Real-time tool needs — these ALWAYS go to MCP, even for OpenText queries
+    //    "opentext stock price" → MCP (stock tool), "latest opentext news" → MCP (web search)
+    //    NOTE: "today"/"now" are excluded — they're temporal modifiers, not real-time data signals
+    //    "time"/"date" are excluded — handled by isMath timezone detection. "availability" excluded — too generic.
+    const needsRealtimeTools = /\b(weather|temperature|forecast|news|latest|stock|price|cap|exchange|rate|currency|live|traffic|travel\s*time|flight|flights|delay|delays|arrival|departure|gate|crypto|bitcoin|ethereum|fx|forex|score|scores|sports|standings|schedule|event|events|concert|ticket|tickets|shipping|shipment|tracking|delivery|dispatch|courier|logistics|train|rail|platform|seat|booking|pnr|eta|etd)\b/.test(promptLower);
     
-    // 2b. General knowledge questions that should use web search (MCP fallback)
-    // Catches "who is", "what is", "how does", "why", "explain", "tell me about", etc.
+    // 8. General knowledge / factual questions that need web search
+    //    "who is CEO of opentext?" → this IS a web-searchable question
+    //    "present opentext ceo?" → also factual (standalone "ceo" near a company name)
+    //    "opentext founder" → also factual
+    //    "microsoft headquarters" → also factual
+    const isFactualQuestion = /\b(who is|who was|who are|who runs|who leads|who manages|who owns|who founded|ceo of|president of|founder of|chairman of|head of|leader of|headquarters of|employees of|revenue of)\b/.test(promptLower) ||
+      /\b(ceo|chief\s*executive|president|founder|chairman|cto|cfo|coo|director|revenue|employees?|headquarters|hq|founded|acquired|acquisition|market\s*cap|valuation)\b/.test(promptLower);
     const needsWebSearch = !isRagOnly && !isMcpOnly && (
       /^(who|what|where|when|why|how|which|whose|whom)\b/.test(promptLower) ||
-      /\b(who is|who was|who are|what is|what are|what was|what does|how to|how does|how do|how is|how are|how many|how much|why is|why do|why does|why are|tell me|explain|describe|define|meaning of|meaning\??$|means\??$|synonym|antonym|definition|dictionary|pronounce|pronunciation|spell|spelling|difference between|compare|list of|history of|founder of|ceo of|president of|capital of|population of|largest|smallest|tallest|oldest|newest|best|worst|fastest)\b/.test(promptLower)
+      /\b(who is|who was|who are|who runs|who leads|who manages|who owns|what is|what are|what was|what does|how to|how does|how do|how is|how are|how many|how much|why is|why do|why does|why are|tell me|explain|describe|define|meaning of|meaning\??$|means\??$|synonym|antonym|definition|dictionary|pronounce|pronunciation|spell|spelling|difference between|compare|list of|history of|founder of|ceo of|president of|capital of|population of|headquarters of|largest|smallest|tallest|oldest|newest|best|worst|fastest)\b/.test(promptLower) ||
+      /\b(present|current|new|acting|interim)\b.*\b(ceo|chief\s*executive|president|founder|chairman|cto|cfo|coo|director|leader)\b/.test(promptLower) ||
+      /\b(ceo|chief\s*executive|president|founder|chairman|cto|cfo|coo)\b.*\?\s*$/.test(promptLower) ||
+      /\b(ceo|president|founder|chairman|cto|cfo|coo|headquarters|hq|revenue|employees|founded|valuation)\b/.test(promptLower)
     );
     
     // 2. Direct simple query detection (Greetings)
     // Avoids RAG/MCP for trivial inputs like "Hi there"
-    const isMath = !isRagOnly && !isMcpOnly && (
+    // Guard: exclude leadership/factual terms from math/time classification
+    const hasLeadershipTerms = /\b(ceo|president|founder|chairman|cto|cfo|coo|chief\s*executive|director|leader|headquarters|hq|revenue|employees|valuation)\b/.test(promptLower);
+    const isMath = !isRagOnly && !isMcpOnly && !hasLeadershipTerms && (
       /^[\d\s\+\-\*\/\(\)\.]+$/.test(activePrompt) || // Pure math
       /^\d+[\+\-\*\/]\d+/.test(activePrompt.replace(/\s/g,'')) || // Embedded math
-      /\b(convert|conversion|unit|units)\b/.test(promptLower) ||
-      /(?:^|\b|\d)(celsius|fahrenheit|kelvin|mm|millimeter|millimetre|cm|centimeter|centimetre|cent|cents|meter|metre|meters|metres|km|kilometer|kilometre|inch|inches|in|foot|feet|ft|yard|yards|yd|mile|miles|mi|mg|milligram|gram|grams|kg|kilogram|kilograms|lb|lbs|pound|pounds|oz|ounce|ounces|ton|tons|tonne|tonnes|ml|milliliter|millilitre|liter|litre|liters|litres|gallon|gallons|gal|cup|cups|tsp|tbsp|teaspoon|tablespoon|fl\s*oz|sq\s*ft|square\s*feet|sq\s*m|square\s*meter|acre|acres|hectare|hectares|cc|cm3|m3)(?:\b|\s|\?|$)/.test(promptLower) ||
+      /\b(convert|conversion)\b.*\b(unit|units|to)\b/.test(promptLower) ||
+      /(?:^|\b|\d)(celsius|fahrenheit|kelvin|mm|millimeter|millimetre|cm|centimeter|centimetre|cent|cents|meter|metre|meters|metres|km|kilometer|kilometre|inch|inches|foot|feet|ft|yard|yards|yd|mile|miles|mi|mg|milligram|gram|grams|kg|kilogram|kilograms|lb|lbs|pound|pounds|oz|ounce|ounces|ton|tons|tonne|tonnes|ml|milliliter|millilitre|liter|litre|liters|litres|gallon|gallons|gal|cup|cups|tsp|tbsp|teaspoon|tablespoon|fl\s*oz|sq\s*ft|square\s*feet|sq\s*m|square\s*meter|acre|acres|hectare|hectares|cc|cm3|m3)(?:\b|\s|\?|$)/.test(promptLower) ||
       /\b(kwh|kilowatt\s*hour|kilowatt\s*hours|btu|btus|watt\s*hour|wh|joule|joules|calorie|calories|kcal)\b/.test(promptLower) ||
-      /\b(currency|exchange\s*rate|fx|forex|convert)\b/.test(promptLower) ||
-      /\b(timezone|time\s*zone|utc|gmt|offset)\b/.test(promptLower) ||
+      /\b(currency|exchange\s*rate|fx|forex)\b/.test(promptLower) ||
       /\b(add|subtract|difference|days?|weeks?|months?|years?)\b.*\b(to|from|between)\b/.test(promptLower) ||
       /\b(date|time)\s+math\b/.test(promptLower)
+    );
+    // Time/timezone queries route through MCP (WorldClock tool), not math
+    // Exclude when leadership/factual terms are present (e.g. "ceo time at opentext" is NOT a time query)
+    const isTimeQuery = !isRagOnly && !isMcpOnly && !hasLeadershipTerms && (
+      /\b(timezone|time\s*zone|utc|gmt|offset)\b/.test(promptLower) ||
+      /\b(what|current|local)\s+(time|date)\b/.test(promptLower) ||
+      /\btime\s+(in|at|for)\b/.test(promptLower) ||
+      /\b(date|time)\s+(in|at|for)\b/.test(promptLower)
     );
     const isDirect = !isRagOnly && !isMcpOnly && (
       ['hello', 'hi', 'hey', 'greetings'].some(s => promptLower.startsWith(s))
@@ -453,36 +577,65 @@ const App: React.FC = () => {
     let reasoningText = "";
 
     if (isRagOnly) {
-      // RAG Only
+      // Explicit RAG override
       path = [...path, WorkflowStep.LG_TO_RAG, WorkflowStep.RAG_TO_VDB, WorkflowStep.VDB_TO_RAG, WorkflowStep.RAG_TO_LG];
       reasoningText = "Route: RAG ONLY\n\n• User explicitly requested internal knowledge.\n• Routing through Retrieval Node and Vector DB.\n• Skipping external tools.";
+    } else if (isTimeQuery) {
+      // Time/timezone → MCP (WorldClock tool)
+      path = [...path, WorkflowStep.LG_TO_MCP, WorkflowStep.MCP_TO_LG];
+      reasoningText = "Route: MCP ONLY\n\n• Time/timezone query detected.\n• Using WorldClock tool.\n• Skipping internal knowledge base.";
     } else if (isMath) {
       // MCP Only for verified computation
       path = [...path, WorkflowStep.LG_TO_MCP, WorkflowStep.MCP_TO_LG];
       reasoningText = "Route: MCP ONLY\n\n• Computation detected.\n• Using tools for exact calculation.\n• Skipping internal knowledge base.";
     } else if (isMcpOnly) {
-      // MCP Only
+      // Explicit MCP override
       path = [...path, WorkflowStep.LG_TO_MCP, WorkflowStep.MCP_TO_LG];
       reasoningText = "Route: MCP ONLY\n\n• User explicitly requested external tools.\n• Calling specific APIs.\n• Skipping internal knowledge base.";
-    } else if (isDirect || (!isRagPreferred && !needsRealtimeTools && !needsWebSearch)) {
-      // Direct / Simple
-      // Remove planning steps for super simple queries? 
-      // Actually, let's keep planning but make it fast. 
-      // But path above ALREADY added Plan steps.
-      // So we just add EVAL steps. 
-      // Wait, for simple math, we might want to skip RAG/MCP steps which is what the `else` block did.
-      // So here we add NOTHING (no RAG, no MCP).
+    } else if (isOpenTextRelated && needsRealtimeTools) {
+      // OpenText + real-time signal → HYBRID (RAG context + live MCP data)
+      // e.g. "opentext stock price today", "latest opentext news"
+      path = [...path, WorkflowStep.LG_TO_RAG, WorkflowStep.RAG_TO_VDB, WorkflowStep.VDB_TO_RAG, WorkflowStep.RAG_TO_LG, WorkflowStep.LG_TO_MCP, WorkflowStep.MCP_TO_LG];
+      reasoningText = "Route: HYBRID (RAG + MCP)\n\n• OpenText query with real-time data need detected.\n• Step 1: Retrieving internal context from Vector DB.\n• Step 2: Calling external tools for live data.\n• Synthesizing response from both sources.";
+    } else if (isOpenTextGeneral && (isFactualQuestion || needsWebSearch)) {
+      // General OpenText question (not product-specific) that is factual
+      // e.g. "who is CEO of opentext?", "tell me about opentext"
+      // → HYBRID: RAG has our docs, MCP can verify/supplement with live web data
+      path = [...path, WorkflowStep.LG_TO_RAG, WorkflowStep.RAG_TO_VDB, WorkflowStep.VDB_TO_RAG, WorkflowStep.RAG_TO_LG, WorkflowStep.LG_TO_MCP, WorkflowStep.MCP_TO_LG];
+      reasoningText = "Route: HYBRID (RAG + MCP)\n\n• General OpenText question detected (factual/informational).\n• Step 1: Searching internal knowledge base for cached context.\n• Step 2: Verifying with external tools (web search).\n• Combining internal docs + live sources for accurate response.";
+    } else if (isOpenTextDocQuery) {
+      // OpenText product/documentation query → RAG only (internal docs are authoritative)
+      // e.g. "Content Server REST API", "how to configure Extended ECM for SAP"
+      path = [...path, WorkflowStep.LG_TO_RAG, WorkflowStep.RAG_TO_VDB, WorkflowStep.VDB_TO_RAG, WorkflowStep.RAG_TO_LG];
+      reasoningText = "Route: RAG (Internal Documentation)\n\n• OpenText product/documentation query detected.\n• Routing through Retrieval Node → Vector DB.\n• Searching internal product documentation.\n• Internal docs are authoritative — skipping external search.";
+    } else if (isRagPreferred && !needsRealtimeTools) {
+      // Non-OpenText RAG-preferred (internal policies, guides, docs)
+      // RAG takes priority over web search when user is asking about internal knowledge
+      path = [...path, WorkflowStep.LG_TO_RAG, WorkflowStep.RAG_TO_VDB, WorkflowStep.VDB_TO_RAG, WorkflowStep.RAG_TO_LG];
+      reasoningText = "Route: RAG (Internal Knowledge)\n\n• Internal knowledge query detected.\n• Routing through Retrieval Node → Vector DB.\n• Searching internal documentation.\n• Skipping external tools.";
+    } else if (isOpenTextRelated && !needsRealtimeTools && !needsWebSearch && !isFactualQuestion) {
+      // General OpenText mention without specific intent — still use RAG for context
+      // e.g. just "opentext", "tell me about opentext"
+      path = [...path, WorkflowStep.LG_TO_RAG, WorkflowStep.RAG_TO_VDB, WorkflowStep.VDB_TO_RAG, WorkflowStep.RAG_TO_LG, WorkflowStep.LG_TO_MCP, WorkflowStep.MCP_TO_LG];
+      reasoningText = "Route: HYBRID (RAG + MCP)\n\n• OpenText reference detected.\n• Step 1: Searching internal knowledge base.\n• Step 2: Supplementing with web search.\n• Providing comprehensive response.";
+    } else if (isFactualQuestion && !isRagPreferred) {
+      // Non-OpenText factual question with leadership/company terms
+      // e.g. "microsoft ceo", "who founded tesla", "google headquarters"
+      path = [...path, WorkflowStep.LG_TO_MCP, WorkflowStep.MCP_TO_LG];
+      reasoningText = "Route: MCP → WEB SEARCH\n\n• Factual/company question detected.\n• Using web search for real-world information.\n• Skipping internal knowledge base.";
+    } else if (isDirect || (!isRagPreferred && !needsRealtimeTools && !needsWebSearch && !isFactualQuestion)) {
+      // Direct / Simple (greetings, trivial)
       reasoningText = isDirect
         ? "Route: DIRECT LLM\n\n• Query classified as simple/direct.\n• No retrieval needed.\n• No external tools needed.\n• Resolving via LLM internal knowledge."
         : "Route: DIRECT LLM\n\n• General question detected.\n• RAG not required.\n• No external tools needed.\n• Resolving via LLM internal knowledge.";
     } else if (needsRealtimeTools || needsWebSearch) {
-      // MCP for real-time data OR general web search
+      // MCP for real-time data OR general web search (non-OpenText)
       path = [...path, WorkflowStep.LG_TO_MCP, WorkflowStep.MCP_TO_LG];
       reasoningText = needsRealtimeTools
         ? "Route: MCP ONLY\n\n• Real-time data requested.\n• Calling external tools.\n• Skipping internal knowledge base."
         : "Route: MCP → WEB SEARCH\n\n• General knowledge question detected.\n• No specific tool matched.\n• Using web search for real-world information.\n• Skipping internal knowledge base.";
     } else {
-      // Hybrid (Default for complex)
+      // Hybrid fallback (Default for complex)
       path = [...path, WorkflowStep.LG_TO_RAG, WorkflowStep.RAG_TO_VDB, WorkflowStep.VDB_TO_RAG, WorkflowStep.RAG_TO_LG, WorkflowStep.LG_TO_MCP, WorkflowStep.MCP_TO_LG];
       reasoningText = "Route: HYBRID (RAG + MCP)\n\n• Complex intent detected.\n• Retrieving context via Retrieval Node + Vector DB.\n• Executing external tools for real-time data.\n• Synthesizing full response.";
     }
@@ -535,6 +688,17 @@ const App: React.FC = () => {
       
       let aiGeneratedOutput = '';
 
+      // At the LG_TO_RAG step, execute the real RAG pipeline
+      if (step === WorkflowStep.LG_TO_RAG) {
+        try {
+          const ragResult = await runRAGPipeline(activePrompt);
+          ragDataRef.current = ragResult;
+        } catch (e) {
+          console.warn('[RAG] Pipeline failed:', e);
+          ragDataRef.current = null;
+        }
+      }
+
       // At the LG_TO_MCP step, actually call the tools and store results
       if (step === WorkflowStep.LG_TO_MCP && !isDirect) {
         const toolData = await runToolsForQuery(activePrompt);
@@ -559,12 +723,22 @@ const App: React.FC = () => {
         if (isDirect) {
            systemPrompt = "You are a precise calculation and logic engine. Meaningful, direct, and concise answers only. Do not provide explanations unless asked. Do not use conversational filler. Be brief.";
         } else {
-           // Use tool results that were already fetched during the LG_TO_MCP step
+           // Combine RAG context + tool results for the final synthesis
            const toolData = toolDataRef.current;
+           const ragResult = ragDataRef.current;
+           const contextParts: string[] = [];
+
+           if (ragResult && ragResult.contextBlock) {
+             contextParts.push(`[RETRIEVED KNOWLEDGE (from RAG pipeline — ${ragResult.stats.totalDocuments} docs, ${ragResult.stats.totalChunks} chunks searched, top relevance: ${(ragResult.stats.topScore * 100).toFixed(1)}%)]\n${ragResult.contextBlock}`);
+           }
 
            if (toolData.length > 0) {
-             enhancedPrompt = `${activePrompt}\n\n[SYSTEM: The following REAL data was retrieved by the autonomous agent tools. Use ONLY this data to answer. Do NOT add any information not present below — no analyst ratings, no volume, no market cap, no data that is not explicitly listed here.]\n${toolData.join('\n')}`;
-             systemPrompt = "You are an intelligent agent. You have just executed tools to gather real-time information. Using ONLY the tool data provided in the context, answer the user's question directly and professionally. CRITICAL: Do NOT invent, fabricate, or add any data that is not explicitly present in the tool results. If the tool data only shows price and change, report only price and change. Never add analyst ratings, volume, market cap, or any other metrics unless they appear in the tool data. Be confident and direct.";
+             contextParts.push(`[LIVE TOOL DATA (from MCP pipeline)]\n${toolData.join('\n')}`);
+           }
+
+           if (contextParts.length > 0) {
+             enhancedPrompt = `${activePrompt}\n\n${contextParts.join('\n\n')}`;
+             systemPrompt = "You are an intelligent agent. You have retrieved knowledge from an internal document store (RAG) and/or executed live tools (MCP) to gather information. Using ONLY the provided context and tool data, answer the user's question directly and professionally. CRITICAL: Do NOT invent, fabricate, or add any data that is not explicitly present in the context. Cite the source documents when relevant. Be confident and direct.";
            }
         }
 

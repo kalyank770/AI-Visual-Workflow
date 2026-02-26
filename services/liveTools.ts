@@ -277,9 +277,14 @@ export async function runToolsForQuery(userPrompt: string): Promise<string[]> {
   }
 
   // ── Wikipedia / Facts Detection ──
-  if (lower.includes("who is") || lower.includes("who was") || lower.includes("what is") || lower.includes("tell me about") || lower.includes("wikipedia") || lower.includes("history of") || lower.includes("explain")) {
-    // Only trigger if no other tool already ran (avoid conflicts)
-    if (toolResults.length === 0) {
+  // Also trigger for leadership/role queries like "opentext present ceo", "founder of tesla"
+  const isLeadershipQuery = /\b(ceo|president|founder|chairman|cto|cfo|coo|chief\s*executive|chief\s*officer|managing\s*director|leader|head\s+of|who\s+runs|who\s+leads|who\s+manages|who\s+owns|who\s+founded)\b/.test(lower);
+  const isCompanyInfoQuery = /\b(headquarters|hq|location|revenue|employees|founded|acquired|acquisition|market\s*cap|valuation|subsidiaries|products|industry)\b/.test(lower);
+  const isWikiTrigger = lower.includes("who is") || lower.includes("who was") || lower.includes("what is") || lower.includes("tell me about") || lower.includes("wikipedia") || lower.includes("history of") || lower.includes("explain") || isLeadershipQuery || isCompanyInfoQuery;
+  if (isWikiTrigger) {
+    // For leadership/company info queries, ALWAYS run Wikipedia (even if other tools ran)
+    // For general wiki queries, only run if no other tool matched
+    if (isLeadershipQuery || isCompanyInfoQuery || toolResults.length === 0) {
       // Use deep search (with infobox extraction) for richer answers
       const wikiData = await wikiDeepSearch(userPrompt);
       if (wikiData) {
@@ -298,7 +303,13 @@ export async function runToolsForQuery(userPrompt: string): Promise<string[]> {
   }
 
   // ── Time / Timezone Detection ──
-  if (lower.includes("time") || lower.includes("timezone") || lower.includes("clock") || lower.includes("date in")) {
+  // Skip if "today" is just a temporal modifier for a leadership/factual query
+  // e.g. "ceo today for opentext" is NOT a time question
+  const isActualTimeQuery = (
+    (lower.includes("time") || lower.includes("timezone") || lower.includes("clock") || lower.includes("date in")) &&
+    !isLeadershipQuery && !isCompanyInfoQuery
+  );
+  if (isActualTimeQuery) {
     const timezone = extractTimezone(userPrompt);
     const timeData = getWorldTime(timezone);
     toolResults.push(`Tool [WorldClock]: ${timeData}`);
@@ -987,6 +998,11 @@ export async function webSearch(query: string): Promise<string | null> {
     // ── Stage 1: DuckDuckGo Instant Answer API (structured knowledge) ──
     const url = `/api/ddg/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`;
     const response = await fetch(url);
+    let ddgResults: string[] = [];
+
+    // For leadership/role queries, DDG abstract often lacks CEO/founder info.
+    // We'll continue to Wikipedia deep search for structured infobox data even if DDG returns results.
+    const isRoleQuery = /\b(ceo|president|founder|chairman|cto|cfo|coo|chief\s*executive|chief\s*officer|managing\s*director|leader|head\s+of|key\s*people)\b/i.test(query);
 
     if (response.ok) {
       const data = await response.json();
@@ -1009,7 +1025,8 @@ export async function webSearch(query: string): Promise<string | null> {
         }
       }
 
-      if (results.length > 0) return results.join("\n");
+      if (results.length > 0 && !isRoleQuery) return results.join("\n");
+      ddgResults = results;
     }
 
     // ── Stage 2: Wikipedia deep search (structured infobox + full intro) ──
@@ -1023,6 +1040,9 @@ export async function webSearch(query: string): Promise<string | null> {
     // ── Stage 3: Wikipedia REST summary (short fallback) ──
     const wikiResult = await getWikipediaSummary(query);
     if (wikiResult) return wikiResult;
+
+    // If we had DDG results from stage 1 (for a role query that continued), return them now
+    if (ddgResults.length > 0) return ddgResults.join("\n");
 
     return `Web search for "${query}" did not return results. The query may be too specific.`;
   } catch (error) {
@@ -1230,19 +1250,27 @@ function extractSearchSubject(query: string): string {
   // Remove trailing punctuation
   subject = subject.replace(/[?!.]+$/g, '').trim();
 
-  // Strip leading question words and filler
+  // Strip leading question words and filler — including "who runs/leads/manages"
   subject = subject
-    .replace(/^(who|what|where|when|why|how|which|whose|whom)\s+(is|are|was|were|does|do|did|can|could|will|would|should|has|have|had)\s+(the\s+)?(present|current|new|latest|recent|former|previous|first|last|acting|interim)?\s*/i, '')
+    .replace(/^(who|what|where|when|why|how|which|whose|whom)\s+(is|are|was|were|does|do|did|can|could|will|would|should|has|have|had|runs?|leads?|manages?|owns?|founded?)\s+(the\s+)?(present|current|new|latest|recent|former|previous|first|last|acting|interim)?\s*/i, '')
     .replace(/^(tell\s+me\s+about|explain|describe|define|search\s+for|look\s+up|find|show\s+me|give\s+me\s+info\s+on|info\s+on|information\s+about)\s+(the\s+)?/i, '')
     .replace(/^(what'?s?|who'?s?)\s+(the\s+)?/i, '')
     .trim();
 
-  // Handle "X of Y" patterns — extract the Y (the subject entity)
+  // Handle "X of/for Y" patterns — extract the Y (the subject entity)
   // "CEO of opentext" → "opentext", "capital of France" → "France"
+  // "ceo today for opentext" → strip filler then match "ceo for opentext" → "opentext"
   // But keep compound concepts: "history of computing" → "computing"
-  const ofMatch = subject.match(/^(?:ceo|chief\s+executive\s+officer|president|founder|chairman|cto|cfo|coo|head|director|capital|population|currency|language|flag|anthem|leader|prime\s+minister|king|queen|mayor|governor)\s+of\s+(.+)/i);
-  if (ofMatch) {
-    subject = ofMatch[1].trim();
+  const roleOfMatch = subject.match(/^(?:ceo|chief\s+executive\s+officer|president|founder|chairman|cto|cfo|coo|head|director|capital|population|currency|language|flag|anthem|leader|prime\s+minister|king|queen|mayor|governor|headquarters|hq|location|revenue|employees|subsidiaries|products|industry|valuation|market\s+cap)(?:\s+(?:today|now|currently|presently|right now|at present|these days))*\s+(?:of|for|at|from)\s+(.+)/i);
+  if (roleOfMatch) {
+    subject = roleOfMatch[1].trim();
+  }
+
+  // Handle "Y ceo" / "Y present ceo" / "Y ceo present" — entity followed by role (with optional modifier before or after)
+  // "opentext present ceo" → "opentext", "opentext ceo" → "opentext", "opentext ceo present" → "opentext"
+  const entityRoleMatch = subject.match(/^(.+?)\s+(?:present|current|new|acting|interim|former|previous)?\s*(?:ceo|chief\s+executive|president|founder|chairman|cto|cfo|coo|head|director|leader|headquarters|hq|location|revenue|employees|subsidiaries|products|industry|valuation)(?:\s+(?:present|current|today|now|currently|presently|right now|at present|these days))*$/i);
+  if (entityRoleMatch && entityRoleMatch[1].trim().length > 1) {
+    subject = entityRoleMatch[1].trim();
   }
 
   // Remove trailing filler words
