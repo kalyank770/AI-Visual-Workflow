@@ -159,6 +159,7 @@ const App: React.FC = () => {
   const scrollRef = useRef<HTMLDivElement>(null);
   const isPausedRef = useRef(isPaused);
   const runIdRef = useRef(0);
+  const toolDataRef = useRef<string[]>([]);
 
   useEffect(() => {
     isPausedRef.current = isPaused;
@@ -235,9 +236,27 @@ const App: React.FC = () => {
         break;
       case WorkflowStep.LG_TO_MCP:
         simpleTransformation = `Plan["Execute"] → API_Call(tool="fetch_data", args={ query: "${shortPrompt}" })`;
+        // If tool data is available, show which tools are being called
+        if (toolDataRef.current.length > 0) {
+          const toolNames = toolDataRef.current.map(t => {
+            const match = t.match(/^Tool \[(.+?)\]/);
+            return match ? match[1] : 'Unknown';
+          });
+          simpleTransformation = `MCP_Call(tools=[${toolNames.map(n => `"${n}"`).join(', ')}], query="${shortPrompt}")`;
+        }
         break;
       case WorkflowStep.MCP_TO_LG:
         simpleTransformation = `API_Response(200) → { status: "success", data: "Live Stream Result" }`;
+        // If tool data is available, show summary of results
+        if (toolDataRef.current.length > 0) {
+          const toolSummary = toolDataRef.current.map(t => {
+            const nameMatch = t.match(/^Tool \[(.+?)\]:/);
+            const name = nameMatch ? nameMatch[1] : 'Tool';
+            const data = t.replace(/^Tool \[.+?\]:\s*/, '').slice(0, 80);
+            return `${name}: ${data}${t.length > 80 ? '...' : ''}`;
+          }).join(' | ');
+          simpleTransformation = `MCP_Response(200) → { tools_executed: ${toolDataRef.current.length}, results: "${toolSummary.slice(0, 200)}" }`;
+        }
         break;
       case WorkflowStep.LG_TO_LLM_EVAL:
         simpleTransformation = `{ context: "...", tool_data: "..." } → Final_Prompt("Synthesize answer for: ${shortPrompt}")`;
@@ -371,12 +390,14 @@ const App: React.FC = () => {
     setPathHistory([]);
     setActivePath([]);
     setActiveModelName("Llama 3.3 70B");
+    toolDataRef.current = [];
   };
 
   const runSimulation = async (customPrompt?: string) => {
     const activePrompt = customPrompt || prompt;
     if (!activePrompt.trim() || isSimulating) return;
     const runId = ++runIdRef.current;
+    toolDataRef.current = [];
     
     if (customPrompt) setPrompt(customPrompt);
     
@@ -501,6 +522,13 @@ const App: React.FC = () => {
       }
       
       let aiGeneratedOutput = '';
+
+      // At the LG_TO_MCP step, actually call the tools and store results
+      if (step === WorkflowStep.LG_TO_MCP && !isDirect) {
+        const toolData = await runToolsForQuery(activePrompt);
+        toolDataRef.current = toolData;
+      }
+
       if (step === WorkflowStep.COMPLETED) {
         if (runIdRef.current !== runId) {
           setIsSimulating(false);
@@ -512,9 +540,8 @@ const App: React.FC = () => {
         if (isDirect) {
            systemPrompt = "You are a precise calculation and logic engine. Meaningful, direct, and concise answers only. Do not provide explanations unless asked. Do not use conversational filler. Be brief.";
         } else {
-           // Call REAL APIs for stock prices, weather, math, etc.
-           // This replaces the old fake random data with live data.
-           const toolData = await runToolsForQuery(activePrompt);
+           // Use tool results that were already fetched during the LG_TO_MCP step
+           const toolData = toolDataRef.current;
 
            if (toolData.length > 0) {
              enhancedPrompt = `${activePrompt}\n\n[SYSTEM: The following REAL data was retrieved by the autonomous agent tools. Use ONLY this data to answer. Do NOT add any information not present below — no analyst ratings, no volume, no market cap, no data that is not explicitly listed here.]\n${toolData.join('\n')}`;
