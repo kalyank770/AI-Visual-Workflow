@@ -160,6 +160,7 @@ const App: React.FC = () => {
   const isPausedRef = useRef(isPaused);
   const runIdRef = useRef(0);
   const toolDataRef = useRef<string[]>([]);
+  const [activeToolName, setActiveToolName] = useState<string | undefined>(undefined);
 
   useEffect(() => {
     isPausedRef.current = isPaused;
@@ -391,6 +392,7 @@ const App: React.FC = () => {
     setActivePath([]);
     setActiveModelName("Llama 3.3 70B");
     toolDataRef.current = [];
+    setActiveToolName(undefined);
   };
 
   const runSimulation = async (customPrompt?: string) => {
@@ -398,6 +400,7 @@ const App: React.FC = () => {
     if (!activePrompt.trim() || isSimulating) return;
     const runId = ++runIdRef.current;
     toolDataRef.current = [];
+    setActiveToolName(undefined);
     
     if (customPrompt) setPrompt(customPrompt);
     
@@ -536,6 +539,13 @@ const App: React.FC = () => {
       if (step === WorkflowStep.LG_TO_MCP && !isDirect) {
         const toolData = await runToolsForQuery(activePrompt);
         toolDataRef.current = toolData;
+        // Extract tool name for diagram animation
+        if (toolData.length > 0) {
+          const nameMatch = toolData[0].match(/^Tool \[(.+?)\]/);
+          setActiveToolName(nameMatch ? nameMatch[1] : undefined);
+        } else {
+          setActiveToolName(undefined);
+        }
       }
 
       if (step === WorkflowStep.COMPLETED) {
@@ -733,6 +743,7 @@ const App: React.FC = () => {
             isDarkMode={isDarkMode}
             isFullscreen={isFullscreen}
             onToggleFullscreen={() => setIsFullscreen(prev => !prev)}
+            activeToolName={activeToolName}
           />
           
           {activePayloadDetail && (

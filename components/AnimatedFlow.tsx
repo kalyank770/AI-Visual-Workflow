@@ -12,9 +12,23 @@ interface AnimatedFlowProps {
   isDarkMode?: boolean;
   isFullscreen: boolean;
   onToggleFullscreen: () => void;
+  activeToolName?: string;
 }
 
-const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, onPayloadClick, isPaused, prompt, isDarkMode = true, isFullscreen, onToggleFullscreen }) => {
+const MCP_TOOLS = [
+  { id: 'StockPrice', label: 'Stock Price', icon: '📈' },
+  { id: 'Weather', label: 'Weather', icon: '🌤️' },
+  { id: 'News', label: 'News', icon: '📰' },
+  { id: 'Dictionary', label: 'Dictionary', icon: '📖' },
+  { id: 'Wikipedia', label: 'Wikipedia', icon: '🌐' },
+  { id: 'WorldClock', label: 'World Clock', icon: '🕐' },
+  { id: 'Currency', label: 'Currency', icon: '💱' },
+  { id: 'UnitConverter', label: 'Unit Conv.', icon: '📐' },
+  { id: 'Calculator', label: 'Calculator', icon: '🧮' },
+  { id: 'WebSearch', label: 'Web Search', icon: '🔍' },
+];
+
+const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, onPayloadClick, isPaused, prompt, isDarkMode = true, isFullscreen, onToggleFullscreen, activeToolName }) => {
   // Center diagram in viewport: scale 0.6 fits height < 600px, x/y offsets center content (775, 465)
   const [transform, setTransform] = useState({ x: 200, y: 30, scale: 0.6 });
   // const [isFullscreen, setIsFullscreen] = useState(false); // Managed by parent now
@@ -29,16 +43,16 @@ const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, o
     const updateLayout = (width: number, height: number) => {
         // Increased bounding box to ensure more content fits (simulates zooming out)
         const graphWidth = 1850; 
-        const graphHeight = 1100; 
+        const graphHeight = 1150; 
         
         const scaleX = width / graphWidth;
         const scaleY = height / graphHeight;
         // Adjusted max scale down to prevent it from being too zoomed in on large screens
         const newScale = Math.max(0.35, Math.min(scaleX, scaleY, 0.70)); 
         
-        // Center of graph content (Adjusted based on standard layout ~800, 450)
-        const newX = (width / 2) - (780 * newScale);
-        const newY = (height / 2) - (480 * newScale);
+        // Center of graph content
+        const newX = (width / 2) - (750 * newScale);
+        const newY = (height / 2) - (520 * newScale);
 
         setTransform({ x: newX, y: newY, scale: newScale });
     };
@@ -77,20 +91,39 @@ const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, o
   const nodes = useMemo(() => [
     { id: 'UI', label: 'User Interface', icon: '📱', x: 50, y: 450, color: '#3b82f6' },
     { id: 'LG', label: 'LanGraph\nOrchestrator', icon: '⚡', x: 500, y: 450, color: '#8b5cf6' },
-    { id: 'LLM', label: 'LLM', icon: '🧠', x: 1000, y: 780, color: '#ec4899' }, // Moved to bottom row
+    { id: 'LLM', label: 'LLM', icon: '🧠', x: 1100, y: 680, color: '#ec4899' },
     { id: 'RAG', label: 'Retrieval\nNode', icon: '🔎', x: 500, y: 150, color: '#10b981' },
     { id: 'VDB', label: 'Vector DB', icon: '🗄️', x: 950, y: 150, color: '#059669' },
-    { id: 'MCP', label: 'MCP Server', icon: '🛠️', x: 500, y: 780, color: '#f59e0b' },
+    { id: 'MCP', label: 'MCP Server', icon: '🛠️', x: 400, y: 780, color: '#f59e0b' },
     { id: 'OUT', label: 'Final Output', icon: '📤', x: 1450, y: 450, color: '#06b6d4' },
   ], []);
+
+  // MCP Tool nodes positioned in a 2-row × 5-column grid below MCP
+  const mcpToolNodes = useMemo(() => {
+    const cols = 5;
+    const startX = 150;    // leftmost column x
+    const gapX = 130;      // horizontal spacing between tool centers
+    const row1Y = 940;     // first row y
+    const row2Y = 1020;    // second row y
+    
+    return MCP_TOOLS.map((tool, i) => {
+      const row = Math.floor(i / cols);
+      const col = i % cols;
+      return {
+        ...tool,
+        x: startX + col * gapX,
+        y: row === 0 ? row1Y : row2Y,
+      };
+    });
+  }, []);
 
   // Bi-directional paths with improved visibility and directional logic
   const traces = useMemo(() => [
     { id: 'UI_LG_REQ', from: 'UI', to: 'LG', path: "M 140 450 L 410 450", type: 'req' },
     
-    // LG -> LLM (L-shaped)
-    { id: 'LG_LLM_REQ', from: 'LG', to: 'LLM', path: "M 590 460 L 700 460 L 700 780 L 910 780", type: 'req' },
-    { id: 'LG_LLM_RES', from: 'LLM', to: 'LG', path: "M 910 750 L 820 750 L 820 440 L 590 440", type: 'res' },
+    // LG -> LLM (L-shaped route going right then down)
+    { id: 'LG_LLM_REQ', from: 'LG', to: 'LLM', path: "M 590 460 L 800 460 L 800 680 L 1000 680", type: 'req' },
+    { id: 'LG_LLM_RES', from: 'LLM', to: 'LG', path: "M 1000 660 L 870 660 L 870 440 L 590 440", type: 'res' },
     
     { id: 'LG_RAG_REQ', from: 'LG', to: 'RAG', path: "M 485 360 L 485 240", type: 'req' },
     { id: 'LG_RAG_RES', from: 'RAG', to: 'LG', path: "M 515 240 L 515 360", type: 'res' },
@@ -98,10 +131,11 @@ const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, o
     { id: 'RAG_VDB_REQ', from: 'RAG', to: 'VDB', path: "M 590 135 L 860 135", type: 'req' },
     { id: 'RAG_VDB_RES', from: 'VDB', to: 'RAG', path: "M 860 165 L 590 165", type: 'res' },
     
-    { id: 'LG_MCP_REQ', from: 'LG', to: 'MCP', path: "M 485 540 L 485 690", type: 'req' },
-    { id: 'LG_MCP_RES', from: 'MCP', to: 'LG', path: "M 515 690 L 515 540", type: 'res' },
+    // LG -> MCP (straight down, adjusted for MCP at x=400)
+    { id: 'LG_MCP_REQ', from: 'LG', to: 'MCP', path: "M 420 540 L 400 690", type: 'req' },
+    { id: 'LG_MCP_RES', from: 'MCP', to: 'LG', path: "M 430 690 L 450 540", type: 'res' },
     
-    // Direct path to OUT is now clearer horizontally
+    // Direct path to OUT
     { id: 'LG_OUT_REQ', from: 'LG', to: 'OUT', path: "M 590 420 L 1360 420", type: 'req' },
   ], []);
 
@@ -235,6 +269,37 @@ const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, o
               RAG Pipeline
             </text>
           </g>
+
+          {/* MCP Tools boundary — wraps only the tool nodes, not the MCP Server box */}
+          <g className="pointer-events-none">
+            <rect
+              x={75}
+              y={895}
+              width={660}
+              height={170}
+              rx={14}
+              fill="none"
+              stroke="#f59e0b"
+              strokeWidth={1.5}
+              strokeDasharray="6 6"
+              opacity={0.35}
+            />
+            {/* Title aligned to left edge, outside the trace paths */}
+            <text
+              x={85}
+              y={890}
+              textAnchor="start"
+              fill="#f59e0b"
+              fontSize="11"
+              fontWeight="700"
+              letterSpacing="0.15em"
+              opacity={0.7}
+              className="uppercase"
+            >
+              MCP Tool Registry
+            </text>
+          </g>
+
           {/* Render All Traces for 2-way Visibility with White Color and Arrows */}
           {traces.map((trace) => {
             const isActive = activeTraceId === trace.id;
@@ -310,6 +375,115 @@ const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, o
                     </g>
                   </g>
                 )}
+              </g>
+            );
+          })}
+
+          {/* MCP Tool Satellite Nodes */}
+          {mcpToolNodes.map((tool) => {
+            const isActive = activeToolName === tool.id && 
+              (currentStep === WorkflowStep.LG_TO_MCP || currentStep === WorkflowStep.MCP_TO_LG);
+            const mcpX = 400;
+            const mcpBottomY = 882; // Just below MCP box bottom edge
+            const toolNodeW = 52;
+            const toolNodeH = 26;
+            
+            // Trace path: from MCP bottom center to tool top edge
+            const traceStartX = mcpX;
+            const traceStartY = mcpBottomY;
+            const traceEndX = tool.x;
+            const traceEndY = tool.y - toolNodeH - 3;
+            // Use a smooth curve through a midpoint for visual appeal
+            const midY = traceStartY + (traceEndY - traceStartY) * 0.45;
+            const tracePath = `M ${traceStartX} ${traceStartY} C ${traceStartX} ${midY}, ${traceEndX} ${midY}, ${traceEndX} ${traceEndY}`;
+            const tracePathReverse = `M ${traceEndX} ${traceEndY} C ${traceEndX} ${midY}, ${traceStartX} ${midY}, ${traceStartX} ${traceStartY}`;
+            
+            return (
+              <g key={`mcp-tool-${tool.id}`}>
+                {/* Trace line from MCP to tool */}
+                <path
+                  d={tracePath}
+                  fill="none"
+                  stroke={isActive ? '#f59e0b' : (isDarkMode ? '#475569' : '#cbd5e1')}
+                  strokeWidth={isActive ? 2.5 : 1}
+                  opacity={isActive ? 1 : 0.2}
+                  strokeDasharray={isActive ? 'none' : '4,4'}
+                  className="transition-all duration-300"
+                />
+                
+                {/* Animated packet on active tool trace */}
+                {isActive && !isPaused && (
+                  <g>
+                    <circle r="5" fill="#f59e0b" filter="url(#packetGlow)">
+                      <animateMotion
+                        dur="0.8s"
+                        repeatCount="indefinite"
+                        path={currentStep === WorkflowStep.MCP_TO_LG 
+                          ? tracePathReverse
+                          : tracePath}
+                        calcMode="spline"
+                        keySplines="0.42, 0, 0.58, 1"
+                      />
+                    </circle>
+                    <circle r="9" fill="#f59e0b" opacity="0.3" filter="url(#packetGlow)">
+                      <animateMotion
+                        dur="0.8s"
+                        repeatCount="indefinite"
+                        path={currentStep === WorkflowStep.MCP_TO_LG
+                          ? tracePathReverse
+                          : tracePath}
+                        calcMode="spline"
+                        keySplines="0.42, 0, 0.58, 1"
+                      />
+                    </circle>
+                  </g>
+                )}
+                
+                {/* Tool node */}
+                <g transform={`translate(${tool.x}, ${tool.y})`}
+                   className="pointer-events-auto cursor-pointer"
+                   onClick={() => onNodeClick('MCP')}
+                >
+                  {/* Glow ring for active tool */}
+                  {isActive && !isPaused && (
+                    <rect
+                      x={-toolNodeW - 6} y={-toolNodeH - 6}
+                      width={(toolNodeW + 6) * 2} height={(toolNodeH + 6) * 2}
+                      rx={14}
+                      fill="none" stroke="#f59e0b" strokeWidth="2"
+                      className="animate-ping opacity-20"
+                    />
+                  )}
+                  <rect
+                    x={-toolNodeW} y={-toolNodeH}
+                    width={toolNodeW * 2} height={toolNodeH * 2}
+                    rx={10}
+                    fill={isActive 
+                      ? (isDarkMode ? '#1c1917' : '#fffbeb')
+                      : (isDarkMode ? '#0f172a' : '#f8fafc')}
+                    stroke={isActive ? '#f59e0b' : (isDarkMode ? '#334155' : '#cbd5e1')}
+                    strokeWidth={isActive ? 2.5 : 1}
+                    className="transition-all duration-300"
+                  />
+                  <text
+                    y={-5}
+                    textAnchor="middle"
+                    fontSize="14"
+                    className="select-none pointer-events-none"
+                  >
+                    {tool.icon}
+                  </text>
+                  <text
+                    y={13}
+                    textAnchor="middle"
+                    fill={isActive ? '#f59e0b' : (isDarkMode ? '#94a3b8' : '#64748b')}
+                    fontSize="7"
+                    fontWeight={isActive ? '800' : '600'}
+                    className="select-none pointer-events-none uppercase tracking-wider"
+                  >
+                    {tool.label}
+                  </text>
+                </g>
               </g>
             );
           })}
