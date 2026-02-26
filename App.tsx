@@ -4,6 +4,7 @@ import { WorkflowStep, SimulationState, LogEntry } from './types';
 import { ARCHITECTURE_COMPONENTS, STEP_METADATA } from './constants';
 import AnimatedFlow from './components/AnimatedFlow';
 import { getArchitectInsight, chatWithArchitect, hasAnyApiKeys } from './services/geminiService';
+import { runToolsForQuery } from './services/liveTools';
 
 const InternalComponentDetail = ({ detail, isDarkMode }: { detail: any, isDarkMode: boolean }) => {
   const [isExpanded, setIsExpanded] = useState(false);
@@ -63,10 +64,11 @@ const App: React.FC = () => {
   const [activePayloadDetail, setActivePayloadDetail] = useState<LogEntry | null>(null);
   const [activeLogicPanel, setActiveLogicPanel] = useState<any | null>(null);
   const [pathReasoning, setPathReasoning] = useState<string | null>(null);
-  const [pathHistory, setPathHistory] = useState<{ prompt: string; reasoning: string; logId: string }[]>([]);
+  const [pathHistory, setPathHistory] = useState<{ prompt: string; reasoning: string; logId: string; output?: string }[]>([]);
   const [highlightedLogId, setHighlightedLogId] = useState<string | null>(null);
   const [activePath, setActivePath] = useState<WorkflowStep[]>([]);
   const [activeModelName, setActiveModelName] = useState<string>("Llama 3.3 70B");
+  const [pathOutputView, setPathOutputView] = useState<{ prompt: string; output: string } | null>(null);
   const [isDarkMode, setIsDarkMode] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const hasKeys = useMemo(() => hasAnyApiKeys(), []);
@@ -510,31 +512,13 @@ const App: React.FC = () => {
         if (isDirect) {
            systemPrompt = "You are a precise calculation and logic engine. Meaningful, direct, and concise answers only. Do not provide explanations unless asked. Do not use conversational filler. Be brief.";
         } else {
-           // Simulate Tool Data Injection for Demo
-           // In a real app, this data would come from the MCP tool execution in previous steps.
-           const toolData = [];
-           const promptLower = activePrompt.toLowerCase();
-           
-           if (promptLower.includes("stock") || promptLower.includes("price") || promptLower.includes("cap")) {
-             // Extract potential ticker (first word or capitalized word)
-             const potentialTicker = activePrompt.match(/\b[A-Z]{2,5}\b/)?.[0] || "Requested Asset";
-             toolData.push(`Tool [StockTicker]: ${potentialTicker} is currently trading at $${(Math.random() * 1000).toFixed(2)}. ${Math.random() > 0.5 ? 'Up' : 'Down'} ${(Math.random() * 5).toFixed(2)}% today.`);
-             toolData.push("Tool [MarketData]: Volume is high. Analyst rating: Buy.");
-           }
-           
-           if (promptLower.includes("weather") || promptLower.includes("temperature")) {
-             toolData.push("Tool [WeatherAPI]: Current conditions: 72°F (22°C), Sunny. Humidity: 45%. Wind: 10mph NW.");
-           }
-           
-           if (promptLower.includes("news") || promptLower.includes("latest")) {
-             toolData.push("Tool [NewsSearch]: Top headline: 'Market rally continues as AI adoption accelerates'. Source: Bloomberg.");
-             toolData.push(`Tool [NewsSearch]: Breaking news for ${activePrompt}: Quarterly earnings exceed expectations.`);
-           }
+           // Call REAL APIs for stock prices, weather, math, etc.
+           // This replaces the old fake random data with live data.
+           const toolData = await runToolsForQuery(activePrompt);
 
            if (toolData.length > 0) {
-             enhancedPrompt = `${activePrompt}\n\n[SYSTEM: The following data was retrieved by the autonomous agent tools. Use it to answer the user query directly as if you knew it all along.]\n${toolData.join('\n')}`;
-             // Update system instruction for the "Architect" persona to be a helpful assistant using the provided data
-             systemPrompt = "You are an intelligent agent. You have just executed tools to gather information. Using the tool data provided in the context, answer the user's question directly and professionally. Do not mention 'As an AI' or 'I do not have access'. You HAVE the access via the tool data provided. Be confident.";
+             enhancedPrompt = `${activePrompt}\n\n[SYSTEM: The following REAL data was retrieved by the autonomous agent tools. Use ONLY this data to answer. Do NOT add any information not present below — no analyst ratings, no volume, no market cap, no data that is not explicitly listed here.]\n${toolData.join('\n')}`;
+             systemPrompt = "You are an intelligent agent. You have just executed tools to gather real-time information. Using ONLY the tool data provided in the context, answer the user's question directly and professionally. CRITICAL: Do NOT invent, fabricate, or add any data that is not explicitly present in the tool results. If the tool data only shows price and change, report only price and change. Never add analyst ratings, volume, market cap, or any other metrics unless they appear in the tool data. Be confident and direct.";
            }
         }
 
@@ -579,6 +563,13 @@ const App: React.FC = () => {
         if (step === WorkflowStep.COMPLETED) {
           newState.finalInput = activePrompt;
           newState.finalOutput = aiGeneratedOutput || "Architect response error.";
+          // Store output in path history for the latest entry
+          setPathHistory(prev => {
+            if (prev.length === 0) return prev;
+            const updated = [...prev];
+            updated[0] = { ...updated[0], output: aiGeneratedOutput || "Architect response error." };
+            return updated;
+          });
           setIsSimulating(false);
           setPrompt('');
         }
@@ -896,12 +887,22 @@ const App: React.FC = () => {
                             <div className={`${index === 0 ? (isDarkMode ? 'text-slate-200' : 'text-slate-800') : (isDarkMode ? 'text-slate-500' : 'text-slate-400')} text-[10px] uppercase tracking-widest font-black`}>
                               {index === 0 ? 'Latest Question' : 'Previous Question'}
                             </div>
-                            <button
-                              onClick={() => openLogEntry(item.logId)}
-                              className={`${isDarkMode ? 'bg-slate-900/60 text-slate-300 border-slate-700/60 hover:bg-slate-900' : 'bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200'} text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full border transition-colors`}
-                            >
-                              Log
-                            </button>
+                            <div className="flex items-center gap-1.5">
+                              {item.output && (
+                                <button
+                                  onClick={() => setPathOutputView({ prompt: item.prompt, output: item.output! })}
+                                  className={`${isDarkMode ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20 hover:bg-emerald-500/20' : 'bg-emerald-50 text-emerald-600 border-emerald-200 hover:bg-emerald-100'} text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full border transition-colors`}
+                                >
+                                  Output
+                                </button>
+                              )}
+                              <button
+                                onClick={() => openLogEntry(item.logId)}
+                                className={`${isDarkMode ? 'bg-slate-900/60 text-slate-300 border-slate-700/60 hover:bg-slate-900' : 'bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200'} text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full border transition-colors`}
+                              >
+                                Log
+                              </button>
+                            </div>
                           </div>
                           <div className={`${index === 0 ? (isDarkMode ? 'text-slate-300' : 'text-slate-700') : (isDarkMode ? 'text-slate-500' : 'text-slate-400')} text-[10px] font-mono mb-3`}>
                             "{item.prompt}"
@@ -1083,6 +1084,38 @@ const App: React.FC = () => {
             </div>
             <div className="mt-8 text-center">
               <p className="text-[9px] text-slate-600 uppercase font-black tracking-widest">Cycle verified by Architect Engine Engine-v3</p>
+            </div>
+          </div>
+        )}
+
+        {/* Path Analysis Output Viewer */}
+        {pathOutputView && (
+          <div className="fixed top-1/2 right-10 -translate-y-1/2 w-full max-w-xl bg-[#080c14]/98 border border-blue-500/20 backdrop-blur-3xl rounded-[2.5rem] p-8 shadow-[0_50px_100px_rgba(0,0,0,0.8)] z-[200] animate-in slide-in-from-right duration-500 max-h-[85vh] overflow-y-auto custom-scrollbar">
+            <div className="flex items-center gap-4 mb-6 sticky top-0 py-2">
+              <div className="w-3 h-3 rounded-full bg-blue-500 shadow-[0_0_12px_rgba(59,130,246,0.5)]" />
+              <span className="text-[12px] font-black uppercase tracking-[0.4em] text-blue-400">Stored Output</span>
+              <button onClick={() => setPathOutputView(null)} className="ml-auto p-2.5 text-slate-600 hover:text-white transition-colors bg-white/5 rounded-2xl border border-white/5">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 6L6 18M6 6l12 12"/></svg>
+              </button>
+            </div>
+            <div className="bg-slate-950/60 p-8 rounded-[2rem] border border-white/5 space-y-6 shadow-inner">
+              <div className="border-b border-white/5 pb-6">
+                <h4 className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-500 mb-3">Input Objective</h4>
+                <p className="text-slate-100 text-[14px] leading-relaxed font-bold font-mono italic">
+                  "{pathOutputView.prompt}"
+                </p>
+              </div>
+              <div>
+                <h4 className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-500 mb-3">Architect's Response</h4>
+                <div className="prose prose-invert prose-sm max-w-none">
+                  <p className="text-blue-400/90 text-[14px] leading-relaxed font-medium font-mono whitespace-pre-wrap">
+                    {pathOutputView.output}
+                  </p>
+                </div>
+              </div>
+            </div>
+            <div className="mt-8 text-center">
+              <p className="text-[9px] text-slate-600 uppercase font-black tracking-widest">Retrieved from Path Analysis History</p>
             </div>
           </div>
         )}
