@@ -1,5 +1,5 @@
 
-import React, { useMemo, useState, useRef, useEffect } from 'react';
+import React, { useMemo, useState, useRef, useEffect, useCallback } from 'react';
 import { WorkflowStep } from '../types';
 import { ARCHITECTURE_COMPONENTS } from '../constants';
 
@@ -31,11 +31,12 @@ const MCP_TOOLS = [
 const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, onPayloadClick, isPaused, prompt, isDarkMode = true, isFullscreen, onToggleFullscreen, activeToolName }) => {
   // Center diagram in viewport: scale 0.6 fits height < 600px, x/y offsets center content (775, 465)
   const [transform, setTransform] = useState({ x: 200, y: 30, scale: 0.6 });
-  // const [isFullscreen, setIsFullscreen] = useState(false); // Managed by parent now
   const isDragging = useRef(false);
   const lastMousePos = useRef({ x: 0, y: 0 });
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const baseTransformRef = useRef({ x: 200, y: 30, scale: 0.6 });
+  const cinematicActive = useRef(false);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -54,7 +55,15 @@ const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, o
         const newX = (width / 2) - (750 * newScale);
         const newY = (height / 2) - (520 * newScale);
 
-        setTransform({ x: newX, y: newY, scale: newScale });
+        setTransform(prev => {
+          // Don't override cinematic zoom
+          if (cinematicActive.current) {
+            baseTransformRef.current = { x: newX, y: newY, scale: newScale };
+            return prev;
+          }
+          baseTransformRef.current = { x: newX, y: newY, scale: newScale };
+          return { x: newX, y: newY, scale: newScale };
+        });
     };
 
     // Use ResizeObserver to detect container size changes (e.g. when telemetry panel expands)
@@ -87,6 +96,196 @@ const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, o
       }
     }
   }, [isPaused]);
+
+  // ─── Cinematic Zoom (fullscreen only, active flow only) ─────────────
+  // Smoothly pans & zooms to frame the active source→destination pair.
+  // On step transitions: brief zoom-out, then zoom-in to new focus.
+  // Returns to base overview when flow ends or fullscreen exits.
+
+  const NODE_POSITIONS: Record<string, { x: number; y: number }> = useMemo(() => ({
+    UI:  { x: 50,   y: 450 },
+    LG:  { x: 500,  y: 450 },
+    LLM: { x: 1100, y: 680 },
+    RAG: { x: 500,  y: 150 },
+    VDB: { x: 950,  y: 150 },
+    MCP: { x: 400,  y: 780 },
+    OUT: { x: 1450, y: 450 },
+  }), []);
+
+  // Map step → { source, target } node IDs
+  const stepFocus = useMemo((): Record<string, { src: string; dst: string }> => ({
+    [WorkflowStep.UI_TO_LG]:      { src: 'UI',  dst: 'LG'  },
+    [WorkflowStep.LG_TO_LLM_PLAN]:{ src: 'LG',  dst: 'LLM' },
+    [WorkflowStep.LLM_TO_LG_PLAN]:{ src: 'LLM', dst: 'LG'  },
+    [WorkflowStep.LG_TO_RAG]:     { src: 'LG',  dst: 'RAG' },
+    [WorkflowStep.RAG_TO_VDB]:    { src: 'RAG', dst: 'VDB' },
+    [WorkflowStep.VDB_TO_RAG]:    { src: 'VDB', dst: 'RAG' },
+    [WorkflowStep.RAG_TO_LG]:     { src: 'RAG', dst: 'LG'  },
+    [WorkflowStep.LG_TO_MCP]:     { src: 'LG',  dst: 'MCP' },
+    [WorkflowStep.MCP_TO_LG]:     { src: 'MCP', dst: 'LG'  },
+    [WorkflowStep.LG_TO_LLM_EVAL]:{ src: 'LG',  dst: 'LLM' },
+    [WorkflowStep.LLM_TO_LG_EVAL]:{ src: 'LLM', dst: 'LG'  },
+    [WorkflowStep.LG_TO_OUT]:     { src: 'LG',  dst: 'OUT' },
+  }), []);
+
+  const animFrameRef = useRef<number>(0);
+  const targetTransformRef = useRef<{ x: number; y: number; scale: number } | null>(null);
+  const prevStepRef = useRef<WorkflowStep>(WorkflowStep.IDLE);
+  const zoomPhaseRef = useRef<'idle' | 'zooming-out' | 'zooming-in'>('idle');
+  const zoomTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const smoothLerp = useCallback(() => {
+    const target = targetTransformRef.current;
+    if (!target) return;
+
+    setTransform(prev => {
+      const lerpSpeed = 0.07; // Smooth interpolation factor
+      const dx = target.x - prev.x;
+      const dy = target.y - prev.y;
+      const ds = target.scale - prev.scale;
+
+      // Stop when close enough
+      if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5 && Math.abs(ds) < 0.001) {
+        return target;
+      }
+
+      return {
+        x: prev.x + dx * lerpSpeed,
+        y: prev.y + dy * lerpSpeed,
+        scale: prev.scale + ds * lerpSpeed,
+      };
+    });
+
+    animFrameRef.current = requestAnimationFrame(smoothLerp);
+  }, []);
+
+  const startLerp = useCallback((target: { x: number; y: number; scale: number }) => {
+    targetTransformRef.current = target;
+    cancelAnimationFrame(animFrameRef.current);
+    animFrameRef.current = requestAnimationFrame(smoothLerp);
+  }, [smoothLerp]);
+
+  useEffect(() => {
+    const focus = stepFocus[currentStep];
+    const isFlowActive = !!focus;
+
+    // Cinematic only in fullscreen with active flow
+    if (!isFullscreen || !isFlowActive) {
+      if (cinematicActive.current) {
+        // Return to base overview
+        cinematicActive.current = false;
+        zoomPhaseRef.current = 'idle';
+        if (zoomTimerRef.current) clearTimeout(zoomTimerRef.current);
+        startLerp(baseTransformRef.current);
+      }
+      prevStepRef.current = currentStep;
+      return;
+    }
+
+    const container = containerRef.current;
+    if (!container) return;
+
+    cinematicActive.current = true;
+    const cw = container.clientWidth;
+    const ch = container.clientHeight;
+
+    const srcPos = NODE_POSITIONS[focus.src];
+    const dstPos = NODE_POSITIONS[focus.dst];
+    if (!srcPos || !dstPos) return;
+
+    // Bounding box of source + destination with padding
+    const padding = 180; // Graph-space padding around the pair
+    let minX = Math.min(srcPos.x, dstPos.x) - padding;
+    let maxX = Math.max(srcPos.x, dstPos.x) + padding;
+    let minY = Math.min(srcPos.y, dstPos.y) - padding;
+    let maxY = Math.max(srcPos.y, dstPos.y) + padding;
+
+    // When MCP is involved, expand bounding box to include all tool nodes
+    if (focus.src === 'MCP' || focus.dst === 'MCP') {
+      // Tool grid: x from 150 to 150+4*130=670, y from 940 to 1020 (+30 for node height)
+      minX = Math.min(minX, 150 - 40);
+      maxX = Math.max(maxX, 670 + 60);
+      maxY = Math.max(maxY, 1050 + 40);
+    }
+    const boxW = maxX - minX;
+    const boxH = maxY - minY;
+
+    // Compute scale to fit bounding box in viewport
+    const scaleX = cw / boxW;
+    const scaleY = ch / boxH;
+    const zoomedScale = Math.min(scaleX, scaleY, 1.1); // Cap at 1.1 to avoid too zoomed
+    const zoomOutScale = zoomedScale * 0.65; // Intermediate zoom-out level
+
+    // Center the bounding box in viewport
+    const centerX = (minX + maxX) / 2;
+    const centerY = (minY + maxY) / 2;
+    const zoomedX = cw / 2 - centerX * zoomedScale;
+    const zoomedY = ch / 2 - centerY * zoomedScale;
+    const zoomOutX = cw / 2 - centerX * zoomOutScale;
+    const zoomOutY = ch / 2 - centerY * zoomOutScale;
+
+    const stepChanged = prevStepRef.current !== currentStep;
+    prevStepRef.current = currentStep;
+
+    if (zoomTimerRef.current) clearTimeout(zoomTimerRef.current);
+
+    if (stepChanged) {
+      // Phase 1: Brief zoom-out
+      zoomPhaseRef.current = 'zooming-out';
+      startLerp({ x: zoomOutX, y: zoomOutY, scale: zoomOutScale });
+
+      // Phase 2: After brief pause, zoom-in to new focus
+      zoomTimerRef.current = setTimeout(() => {
+        zoomPhaseRef.current = 'zooming-in';
+        startLerp({ x: zoomedX, y: zoomedY, scale: zoomedScale });
+      }, 400);
+    } else {
+      // Initial zoom-in (first render with this step)
+      zoomPhaseRef.current = 'zooming-in';
+      startLerp({ x: zoomedX, y: zoomedY, scale: zoomedScale });
+    }
+
+    return () => {
+      if (zoomTimerRef.current) clearTimeout(zoomTimerRef.current);
+    };
+  }, [currentStep, isFullscreen, stepFocus, NODE_POSITIONS, startLerp]);
+
+  // Reset view when exiting fullscreen — force recalculate base transform
+  useEffect(() => {
+    if (!isFullscreen) {
+      // Immediately disable cinematic so ResizeObserver can apply transforms
+      cinematicActive.current = false;
+      zoomPhaseRef.current = 'idle';
+      cancelAnimationFrame(animFrameRef.current);
+      targetTransformRef.current = null;
+      if (zoomTimerRef.current) clearTimeout(zoomTimerRef.current);
+
+      // Force recalculate and apply base transform for current container size
+      const container = containerRef.current;
+      if (container) {
+        const width = container.clientWidth;
+        const height = container.clientHeight;
+        const graphWidth = 1850;
+        const graphHeight = 1150;
+        const scaleX = width / graphWidth;
+        const scaleY = height / graphHeight;
+        const newScale = Math.max(0.35, Math.min(scaleX, scaleY, 0.70));
+        const newX = (width / 2) - (750 * newScale);
+        const newY = (height / 2) - (520 * newScale);
+        const fresh = { x: newX, y: newY, scale: newScale };
+        baseTransformRef.current = fresh;
+        setTransform(fresh);
+      }
+    }
+  }, [isFullscreen]);
+
+  // Cleanup animation frame on unmount
+  useEffect(() => {
+    return () => {
+      cancelAnimationFrame(animFrameRef.current);
+      if (zoomTimerRef.current) clearTimeout(zoomTimerRef.current);
+    };
+  }, []);
 
   const nodes = useMemo(() => [
     { id: 'UI', label: 'User Interface', icon: '📱', x: 50, y: 450, color: '#3b82f6' },
