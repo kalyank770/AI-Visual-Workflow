@@ -423,6 +423,13 @@ const App: React.FC = () => {
     const isRagPreferred = /\b(polic(y|ies)|guide(s)?|doc(s|ument(ation)?)?|internal|knowledge(base)?|support|help(desk)?|in\s*house|organization(al)?)\b/.test(promptLower);
     const needsRealtimeTools = /\b(weather|temperature|forecast|news|latest|stock|price|cap|exchange|rate|currency|live|today|now|traffic|travel\s*time|flight|flights|delay|delays|arrival|departure|gate|crypto|bitcoin|ethereum|fx|forex|score|scores|sports|match|game|standings|schedule|event|events|concert|ticket|tickets|time|date|timezone|shipping|shipment|tracking|delivery|dispatch|courier|logistics|train|rail|platform|seat|availability|booking|pnr|eta|etd)\b/.test(promptLower);
     
+    // 2b. General knowledge questions that should use web search (MCP fallback)
+    // Catches "who is", "what is", "how does", "why", "explain", "tell me about", etc.
+    const needsWebSearch = !isRagOnly && !isMcpOnly && (
+      /^(who|what|where|when|why|how|which|whose|whom)\b/.test(promptLower) ||
+      /\b(who is|who was|who are|what is|what are|what was|what does|how to|how does|how do|how is|how are|how many|how much|why is|why do|why does|why are|tell me|explain|describe|define|meaning of|difference between|compare|list of|history of|founder of|ceo of|president of|capital of|population of|largest|smallest|tallest|oldest|newest|best|worst|fastest)\b/.test(promptLower)
+    );
+    
     // 2. Direct simple query detection (Greetings)
     // Avoids RAG/MCP for trivial inputs like "Hi there"
     const isMath = !isRagOnly && !isMcpOnly && (
@@ -454,7 +461,7 @@ const App: React.FC = () => {
       // MCP Only
       path = [...path, WorkflowStep.LG_TO_MCP, WorkflowStep.MCP_TO_LG];
       reasoningText = "Route: MCP ONLY\n\n• User explicitly requested external tools.\n• Calling specific APIs.\n• Skipping internal knowledge base.";
-    } else if (isDirect || (!isRagPreferred && !needsRealtimeTools)) {
+    } else if (isDirect || (!isRagPreferred && !needsRealtimeTools && !needsWebSearch)) {
       // Direct / Simple
       // Remove planning steps for super simple queries? 
       // Actually, let's keep planning but make it fast. 
@@ -465,10 +472,12 @@ const App: React.FC = () => {
       reasoningText = isDirect
         ? "Route: DIRECT LLM\n\n• Query classified as simple/direct.\n• No retrieval needed.\n• No external tools needed.\n• Resolving via LLM internal knowledge."
         : "Route: DIRECT LLM\n\n• General question detected.\n• RAG not required.\n• No external tools needed.\n• Resolving via LLM internal knowledge.";
-    } else if (needsRealtimeTools) {
-      // MCP Only for real-time data
+    } else if (needsRealtimeTools || needsWebSearch) {
+      // MCP for real-time data OR general web search
       path = [...path, WorkflowStep.LG_TO_MCP, WorkflowStep.MCP_TO_LG];
-      reasoningText = "Route: MCP ONLY\n\n• Real-time data requested.\n• Calling external tools.\n• Skipping internal knowledge base.";
+      reasoningText = needsRealtimeTools
+        ? "Route: MCP ONLY\n\n• Real-time data requested.\n• Calling external tools.\n• Skipping internal knowledge base."
+        : "Route: MCP → WEB SEARCH\n\n• General knowledge question detected.\n• No specific tool matched.\n• Using web search for real-world information.\n• Skipping internal knowledge base.";
     } else {
       // Hybrid (Default for complex)
       path = [...path, WorkflowStep.LG_TO_RAG, WorkflowStep.RAG_TO_VDB, WorkflowStep.VDB_TO_RAG, WorkflowStep.RAG_TO_LG, WorkflowStep.LG_TO_MCP, WorkflowStep.MCP_TO_LG];

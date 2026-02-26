@@ -900,6 +900,248 @@ server.tool(
   }
 );
 
+// ─── Tool 11: Web Search (DuckDuckGo Instant Answer API) ──
+// FALLBACK tool: use this when the user's query doesn't match any
+// specific tool above. Searches the web using DuckDuckGo's free
+// Instant Answer API which provides answers from Wikipedia,
+// Stack Overflow, MDN, and other knowledge sources.
+// No API key needed.
+
+server.tool(
+  "web_search",
+  "Search the web for general information. Use this as a FALLBACK when no other tool (stocks, weather, calculator, currency, news, dictionary, wikipedia, time, units) matches the user's query. Returns instant answers from DuckDuckGo powered by Wikipedia, Stack Overflow, MDN, and other sources.",
+  {
+    query: z.string().describe("The search query to look up on the web"),
+  },
+  async ({ query }) => {
+    try {
+      // ── Stage 1: DuckDuckGo Instant Answer API (structured knowledge) ──
+      const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`;
+      const response = await fetch(url, {
+        headers: { "User-Agent": "MCP-Server/2.0" },
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        const lines = [];
+
+        if (data.Abstract) {
+          lines.push(`## 🔍 ${data.Heading || query}`);
+          lines.push("");
+          lines.push(data.Abstract);
+          if (data.AbstractURL) {
+            lines.push(`\n🔗 Source: [${data.AbstractSource || "Link"}](${data.AbstractURL})`);
+          }
+        }
+        if (data.Answer) lines.push(`\n**Answer:** ${data.Answer}`);
+        if (data.Definition) {
+          lines.push(`\n**Definition:** ${data.Definition}`);
+          if (data.DefinitionSource) lines.push(`*(Source: ${data.DefinitionSource})*`);
+        }
+        if (data.RelatedTopics && data.RelatedTopics.length > 0) {
+          const topics = data.RelatedTopics.filter((t) => t.Text).slice(0, 5);
+          if (topics.length > 0) {
+            lines.push("\n### Related:");
+            for (const t of topics) lines.push(`- ${t.Text}`);
+          }
+        }
+
+        if (lines.length > 0) {
+          return { content: [{ type: "text", text: lines.join("\n") }] };
+        }
+      }
+
+      // ── Stage 2: Wikipedia deep search (structured infobox + full intro) ──
+      const wikiResult = await wikiDeepSearchNode(query);
+      if (wikiResult) {
+        return { content: [{ type: "text", text: wikiResult }] };
+      }
+
+      // ── Stage 3: Wikipedia REST summary (short fallback) ──
+      const wikiUrl = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(query)}`;
+      const wikiResp = await fetch(wikiUrl, {
+        headers: { "User-Agent": "MCP-Server/2.0" },
+      });
+
+      if (wikiResp.ok) {
+        const wikiData = await wikiResp.json();
+        if (wikiData.extract) {
+          return {
+            content: [{
+              type: "text",
+              text: [
+                `## 🔍 ${wikiData.titles?.normalized || query}`,
+                "",
+                wikiData.extract,
+                wikiData.description ? `\n*${wikiData.description}*` : "",
+                `\n*(Source: Wikipedia)*`,
+              ].filter(Boolean).join("\n"),
+            }],
+          };
+        }
+      }
+
+      return {
+        content: [{
+          type: "text",
+          text: `🔍 Web search for "${query}" did not return results. The query may be too specific.`,
+        }],
+      };
+    } catch (error) {
+      return { content: [{ type: "text", text: `❌ Web search error: ${error.message}` }] };
+    }
+  }
+);
+
+// ── Wikipedia Deep Search (Node.js version) ────────────────
+// Used by web_search tool as Stage 2 fallback.
+// Searches Wikipedia, fetches the best article's full intro + infobox,
+// and extracts structured data like CEO, founder, key_people, etc.
+
+async function wikiDeepSearchNode(query) {
+  try {
+    // Extract the key subject from the query for better Wikipedia search
+    const searchQuery = extractSearchSubject(query);
+
+    // Try with extracted subject first, then fall back to full query
+    const queries = searchQuery !== query.trim()
+      ? [searchQuery, query]
+      : [query];
+
+    let articles = [];
+    for (const q of queries) {
+      const searchUrl = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(q)}&srlimit=3&format=json&utf8=1`;
+      const searchResp = await fetch(searchUrl, { headers: { "User-Agent": "MCP-Server/2.0" } });
+      if (!searchResp.ok) continue;
+
+      const searchData = await searchResp.json();
+      const found = searchData?.query?.search;
+      if (found && found.length > 0) {
+        articles = found;
+        break;
+      }
+    }
+
+    if (articles.length === 0) return null;
+
+    const bestTitle = articles[0].title;
+    const parseUrl = `https://en.wikipedia.org/w/api.php?action=parse&page=${encodeURIComponent(bestTitle)}&prop=wikitext&format=json&utf8=1&section=0`;
+    const parseResp = await fetch(parseUrl, { headers: { "User-Agent": "MCP-Server/2.0" } });
+    if (!parseResp.ok) return null;
+
+    const parseData = await parseResp.json();
+    const wikitext = parseData?.parse?.wikitext?.['*'];
+    if (!wikitext) return null;
+
+    const results = [];
+    results.push(`## 🔍 ${bestTitle}`);
+    results.push('');
+
+    // Extract infobox fields
+    const infoboxFields = {};
+    const fieldRegex = /\|\s*(\w[\w\s]*?)\s*=\s*(.+?)(?=\n\||\n\}\})/gs;
+    let match;
+    while ((match = fieldRegex.exec(wikitext)) !== null) {
+      const key = match[1].trim().toLowerCase().replace(/\s+/g, '_');
+      let val = match[2].trim()
+        .replace(/\{\{unbulleted list\|/gi, '')
+        .replace(/\{\{(?:start date and age|start date)\|([^}]+)\}\}/gi, '$1')
+        .replace(/\{\{(?:increase|decrease|steady)\}\}/gi, '')
+        .replace(/\{\{(?:US\$|USD)\|([^}]+)\}\}/gi, 'US$ $1')
+        .replace(/\{\{(?:ISIN|tsx|NASDAQ|URL)[^}]*\}\}/gi, '')
+        .replace(/\[\[([^|\]]+)\|([^\]]+)\]\]/g, '$2')
+        .replace(/\[\[([^\]]+)\]\]/g, '$1')
+        .replace(/\{\{[^}]*\}\}/g, '')
+        .replace(/'{2,3}/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (val && val.length > 0 && val.length < 500) {
+        infoboxFields[key] = val;
+      }
+    }
+
+    const importantFields = [
+      ['key_people', 'Key People'], ['founder', 'Founder'], ['founders', 'Founders'],
+      ['ceo', 'CEO'], ['chairman', 'Chairman'], ['president', 'President'],
+      ['type', 'Type'], ['industry', 'Industry'],
+      ['location', 'Location'], ['headquarters', 'Headquarters'],
+      ['foundation', 'Founded'], ['founded', 'Founded'],
+      ['revenue', 'Revenue'], ['num_employees', 'Employees'],
+      ['products', 'Products'], ['website', 'Website'],
+      ['parent', 'Parent Company'], ['subsid', 'Subsidiaries'],
+      ['capital', 'Capital'], ['population', 'Population'],
+      ['leader_name', 'Leader'], ['leader_title', 'Leader Title'],
+      ['birth_date', 'Born'], ['death_date', 'Died'],
+      ['nationality', 'Nationality'], ['occupation', 'Occupation'],
+      ['known_for', 'Known For'],
+    ];
+
+    const infoboxLines = [];
+    for (const [key, label] of importantFields) {
+      if (infoboxFields[key]) {
+        infoboxLines.push(`**${label}:** ${infoboxFields[key]}`);
+      }
+    }
+
+    if (infoboxLines.length > 0) {
+      results.push('### Key Facts');
+      results.push(...infoboxLines);
+      results.push('');
+    }
+
+    // Extract plain text intro
+    const introText = wikitext
+      .replace(/\{\{[^{}]*(?:\{\{[^{}]*\}\}[^{}]*)*\}\}/gs, '')
+      .replace(/\[\[(?:File|Image|Category):[^\]]*\]\]/gi, '')
+      .replace(/\[\[([^|\]]+)\|([^\]]+)\]\]/g, '$2')
+      .replace(/\[\[([^\]]+)\]\]/g, '$1')
+      .replace(/<ref[^>]*\/>/gi, '')
+      .replace(/<ref[^>]*>[\s\S]*?<\/ref>/gi, '')
+      .replace(/<[^>]+>/g, '')
+      .replace(/'{2,3}/g, '')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+
+    if (introText.length > 50) {
+      results.push(introText.slice(0, 1500));
+    }
+
+    results.push('\n*(Source: Wikipedia)*');
+
+    return results.join('\n');
+  } catch (error) {
+    console.error('Wikipedia deep search failed:', error);
+    return null;
+  }
+}
+
+// ── Helper: Extract search subject from natural language query ──
+// "who is present CEO of opentext?" → "opentext"
+// "what is the capital of France?" → "France"
+
+function extractSearchSubject(query) {
+  let subject = query.trim().replace(/[?!.]+$/g, '').trim();
+
+  subject = subject
+    .replace(/^(who|what|where|when|why|how|which|whose|whom)\s+(is|are|was|were|does|do|did|can|could|will|would|should|has|have|had)\s+(the\s+)?(present|current|new|latest|recent|former|previous|first|last|acting|interim)?\s*/i, '')
+    .replace(/^(tell\s+me\s+about|explain|describe|define|search\s+for|look\s+up|find|show\s+me|give\s+me\s+info\s+on|info\s+on|information\s+about)\s+(the\s+)?/i, '')
+    .replace(/^(what'?s?|who'?s?)\s+(the\s+)?/i, '')
+    .trim();
+
+  const ofMatch = subject.match(/^(?:ceo|chief\s+executive\s+officer|president|founder|chairman|cto|cfo|coo|head|director|capital|population|currency|language|flag|anthem|leader|prime\s+minister|king|queen|mayor|governor)\s+of\s+(.+)/i);
+  if (ofMatch) {
+    subject = ofMatch[1].trim();
+  }
+
+  subject = subject.replace(/\s+(today|now|currently|right now|at present|these days|in \d{4})$/i, '').trim();
+
+  if (!subject || subject.length < 2) {
+    subject = query.replace(/[?!.]+$/g, '').trim();
+  }
+
+  return subject;
+}
+
 // ─── Start the Server ───────────────────────────────────────
 // This connects the server to "stdio" (standard input/output).
 // AI assistants communicate with MCP servers through this channel.
@@ -910,7 +1152,7 @@ async function main() {
   // Note: We use console.error for logging because console.log (stdout)
   // is reserved for MCP protocol communication.
   console.error("✅ AI Visual Workflow MCP Server is running!");
-  console.error("   Tools: search_stock_ticker, get_stock_price, get_weather, calculate, convert_currency, get_news, get_dictionary, get_wikipedia, get_world_time, convert_units");
+  console.error("   Tools: search_stock_ticker, get_stock_price, get_weather, calculate, convert_currency, get_news, get_dictionary, get_wikipedia, get_world_time, convert_units, web_search");
 }
 
 main().catch((error) => {

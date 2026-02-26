@@ -59,6 +59,12 @@ export default defineConfig(({ mode }) => {
             rewrite: (path: string) => path.replace(/^\/api\/yahoo-chart/, ''),
             headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
           },
+          '/api/ddg': {
+            target: 'https://api.duckduckgo.com',
+            changeOrigin: true,
+            rewrite: (path: string) => path.replace(/^\/api\/ddg/, ''),
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+          },
         },
       },
       plugins: [react()],

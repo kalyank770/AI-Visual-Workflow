@@ -263,11 +263,18 @@ export async function runToolsForQuery(userPrompt: string): Promise<string[]> {
   if (lower.includes("who is") || lower.includes("who was") || lower.includes("what is") || lower.includes("tell me about") || lower.includes("wikipedia") || lower.includes("history of") || lower.includes("explain")) {
     // Only trigger if no other tool already ran (avoid conflicts)
     if (toolResults.length === 0) {
-      const topic = extractWikiTopic(userPrompt);
-      if (topic && topic.length > 2) {
-        const wikiData = await getWikipediaSummary(topic);
-        if (wikiData) {
-          toolResults.push(`Tool [Wikipedia]: ${wikiData}`);
+      // Use deep search (with infobox extraction) for richer answers
+      const wikiData = await wikiDeepSearch(userPrompt);
+      if (wikiData) {
+        toolResults.push(`Tool [Wikipedia]: ${wikiData}`);
+      } else {
+        // Fallback to short summary
+        const topic = extractWikiTopic(userPrompt);
+        if (topic && topic.length > 2) {
+          const shortData = await getWikipediaSummary(topic);
+          if (shortData) {
+            toolResults.push(`Tool [Wikipedia]: ${shortData}`);
+          }
         }
       }
     }
@@ -304,6 +311,15 @@ export async function runToolsForQuery(userPrompt: string): Promise<string[]> {
       } catch {
         // Math eval failed, let the LLM handle it
       }
+    }
+  }
+
+  // ── Web Search Fallback ──
+  // If NO tool matched the query, use web search as a catch-all
+  if (toolResults.length === 0) {
+    const searchData = await webSearch(userPrompt);
+    if (searchData) {
+      toolResults.push(`Tool [WebSearch]: ${searchData}`);
     }
   }
 
@@ -850,6 +866,285 @@ export async function convertCurrency(prompt: string): Promise<string | null> {
     console.warn("Currency conversion failed:", error);
     return null;
   }
+}
+
+// ─── Web Search (DuckDuckGo Instant Answer API) ───────────
+// Free, no API key needed. Used as a fallback when no other tool matches.
+// Uses DuckDuckGo's Instant Answer API which returns structured answers
+// from Wikipedia, Stack Overflow, MDN, and other knowledge sources.
+
+export async function webSearch(query: string): Promise<string | null> {
+  try {
+    // ── Stage 1: DuckDuckGo Instant Answer API (structured knowledge) ──
+    const url = `/api/ddg/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`;
+    const response = await fetch(url);
+
+    if (response.ok) {
+      const data = await response.json();
+      const results: string[] = [];
+
+      if (data.Abstract) {
+        results.push(data.Abstract);
+        if (data.AbstractSource) results.push(`(Source: ${data.AbstractSource})`);
+      }
+      if (data.Answer) results.push(`Answer: ${data.Answer}`);
+      if (data.Definition) {
+        results.push(`Definition: ${data.Definition}`);
+        if (data.DefinitionSource) results.push(`(Source: ${data.DefinitionSource})`);
+      }
+      if (data.RelatedTopics && data.RelatedTopics.length > 0) {
+        const topics = data.RelatedTopics.filter((t: any) => t.Text).slice(0, 3);
+        if (topics.length > 0) {
+          results.push("Related:");
+          for (const t of topics) results.push(`  • ${t.Text}`);
+        }
+      }
+
+      if (results.length > 0) return results.join("\n");
+    }
+
+    // ── Stage 2: Wikipedia deep search (structured infobox + full intro) ──
+    // The REST summary API returns very short text. Instead, we:
+    //   a) Search Wikipedia to find the best matching article
+    //   b) Fetch the full intro wikitext (which includes the infobox)
+    //   c) Extract key structured data (CEO, founder, HQ, etc.)
+    const wikiDeepResult = await wikiDeepSearch(query);
+    if (wikiDeepResult) return wikiDeepResult;
+
+    // ── Stage 3: Wikipedia REST summary (short fallback) ──
+    const wikiResult = await getWikipediaSummary(query);
+    if (wikiResult) return wikiResult;
+
+    return `Web search for "${query}" did not return results. The query may be too specific.`;
+  } catch (error) {
+    console.warn("Web search failed:", error);
+    try {
+      const wikiResult = await getWikipediaSummary(query);
+      if (wikiResult) return wikiResult;
+    } catch { /* ignore */ }
+    return null;
+  }
+}
+
+// ── Wikipedia Deep Search ──────────────────────────────────
+// Searches Wikipedia, finds the best article, then fetches the
+// full intro section including the infobox. Extracts structured
+// data like CEO, founder, headquarters, key_people, etc.
+// This is much richer than the REST /page/summary endpoint.
+
+async function wikiDeepSearch(query: string): Promise<string | null> {
+  try {
+    // Step 0: Extract the key subject from the query for better Wikipedia search
+    // "who is present CEO of opentext?" → "opentext"
+    // "what is the capital of France?" → "France"
+    // "tell me about quantum computing" → "quantum computing"
+    const searchQuery = extractSearchSubject(query);
+    console.log('[wikiDeepSearch] Query:', query, '→ Subject:', searchQuery);
+
+    // Step 1: Search Wikipedia for the best matching article
+    // Try with extracted subject first, then fall back to full query
+    const queries = searchQuery !== query.trim()
+      ? [searchQuery, query]
+      : [query];
+
+    let articles: any[] = [];
+    for (const q of queries) {
+      const searchUrl = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(q)}&srlimit=3&format=json&utf8=1&origin=*`;
+      const searchResp = await fetch(searchUrl);
+      if (!searchResp.ok) continue;
+
+      const searchData = await searchResp.json();
+      const found = searchData?.query?.search;
+      if (found && found.length > 0) {
+        articles = found;
+        break;
+      }
+    }
+
+    if (articles.length === 0) return null;
+
+    // Step 2: For the top result, fetch the full intro section (wikitext)
+    const bestTitle = articles[0].title;
+    const parseUrl = `https://en.wikipedia.org/w/api.php?action=parse&page=${encodeURIComponent(bestTitle)}&prop=wikitext&format=json&utf8=1&section=0&origin=*`;
+    const parseResp = await fetch(parseUrl);
+    if (!parseResp.ok) return null;
+
+    const parseData = await parseResp.json();
+    const wikitext = parseData?.parse?.wikitext?.['*'];
+    if (!wikitext) return null;
+
+    const results: string[] = [];
+    results.push(`Wikipedia: ${bestTitle}`);
+    results.push('');
+
+    // Step 3: Extract infobox fields (key_people, CEO, founder, etc.)
+    const infoboxFields: Record<string, string> = {};
+    const fieldRegex = /\|\s*(\w[\w\s]*?)\s*=\s*(.+?)(?=\n\||\n\}\})/gs;
+    let match;
+    while ((match = fieldRegex.exec(wikitext)) !== null) {
+      const key = match[1].trim().toLowerCase().replace(/\s+/g, '_');
+      // Clean wikitext markup: [[link|text]] → text, {{unbulleted list|...}} → items
+      let val = match[2].trim()
+        .replace(/\{\{unbulleted list\|/gi, '')       // Remove {{unbulleted list| opener
+        .replace(/\{\{(?:flatlist|plainlist)\|?/gi, '')  // Remove other list templates
+        .replace(/\{\{(?:start date and age|start date)\|([^}]+)\}\}/gi, '$1')
+        .replace(/\{\{(?:increase|decrease|steady)\}\}/gi, '')
+        .replace(/\{\{(?:US\$|USD)\|([^}]+)\}\}/gi, 'US$ $1')
+        .replace(/\{\{(?:ISIN|tsx|NASDAQ|URL)[^}]*\}\}/gi, '')
+        .replace(/\[\[([^|\]]+)\|([^\]]+)\]\]/g, '$2')   // [[link|text]] → text
+        .replace(/\[\[([^\]]+)\]\]/g, '$1')               // [[link]] → link
+        .replace(/\{\{[^}]*\}\}/g, '')                     // Remove remaining {{...}}
+        .replace(/\}\}+/g, '')                              // Remove orphaned }}
+        .replace(/&nbsp;/gi, ' ')                           // HTML entity
+        .replace(/\|(?:df|mf|link|display|first)=\w*/g, '')   // Strip template params like |df=yes
+        .replace(/'{2,3}/g, '')                             // Bold/italic
+        .replace(/\|/g, ', ')                               // Remaining | separators → comma
+        .replace(/,\s*,/g, ',')                             // Collapse double commas
+        .replace(/,\s*$/g, '')                              // Trailing comma
+        .replace(/^\s*,\s*/g, '')                           // Leading comma
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (val && val.length > 0 && val.length < 500) {
+        infoboxFields[key] = val;
+      }
+    }
+
+    // Show relevant infobox data
+    const importantFields = [
+      ['key_people', 'Key People'],
+      ['founder', 'Founder'],
+      ['founders', 'Founders'],
+      ['ceo', 'CEO'],
+      ['chairman', 'Chairman'],
+      ['president', 'President'],
+      ['type', 'Type'],
+      ['industry', 'Industry'],
+      ['location', 'Location'],
+      ['headquarters', 'Headquarters'],
+      ['hq_location', 'Headquarters'],
+      ['foundation', 'Founded'],
+      ['founded', 'Founded'],
+      ['revenue', 'Revenue'],
+      ['num_employees', 'Employees'],
+      ['products', 'Products'],
+      ['website', 'Website'],
+      ['area_served', 'Area Served'],
+      ['parent', 'Parent Company'],
+      ['subsid', 'Subsidiaries'],
+      ['capital', 'Capital'],
+      ['population', 'Population'],
+      ['leader_name', 'Leader'],
+      ['leader_title', 'Leader Title'],
+      ['birth_date', 'Born'],
+      ['death_date', 'Died'],
+      ['nationality', 'Nationality'],
+      ['occupation', 'Occupation'],
+      ['known_for', 'Known For'],
+      ['spouse', 'Spouse'],
+      ['children', 'Children'],
+      ['alma_mater', 'Education'],
+      ['awards', 'Awards'],
+    ];
+
+    const infoboxLines: string[] = [];
+    for (const [key, label] of importantFields) {
+      if (infoboxFields[key]) {
+        infoboxLines.push(`${label}: ${infoboxFields[key]}`);
+      }
+    }
+
+    if (infoboxLines.length > 0) {
+      results.push('--- Key Facts ---');
+      results.push(...infoboxLines);
+      results.push('');
+    }
+
+    // Step 4: Extract the plain text intro (after the infobox)
+    // Use iterative approach to strip nested templates (handles {{a{{b}}c}})
+    let cleanText = wikitext;
+    let prevLen = 0;
+    while (cleanText.length !== prevLen) {
+      prevLen = cleanText.length;
+      cleanText = cleanText.replace(/\{\{[^{}]*\}\}/gs, ''); // Strip innermost {{...}} each pass
+    }
+    const introText = cleanText
+      .replace(/\[\[(?:File|Image|Category):[^\]]*\]\]/gi, '')   // Remove file/category links
+      .replace(/\[\[([^|\]]+)\|([^\]]+)\]\]/g, '$2')             // [[link|text]] → text
+      .replace(/\[\[([^\]]+)\]\]/g, '$1')                        // [[link]] → link
+      .replace(/<ref[^>]*\/>/gi, '')                              // Remove self-closing refs
+      .replace(/<ref[^>]*>[\s\S]*?<\/ref>/gi, '')                // Remove refs with content
+      .replace(/<[^>]+>/g, '')                                    // Remove HTML tags
+      .replace(/&nbsp;/gi, ' ')                                  // HTML entities
+      .replace(/'{2,3}/g, '')                                     // Remove bold/italic markup
+      .replace(/\|[^|\n]*=[^|\n]*/g, '')                          // Remove leftover | key=val
+      .replace(/\n{3,}/g, '\n\n')                                // Collapse blank lines
+      .trim();
+
+    if (introText.length > 50) {
+      results.push(introText.slice(0, 1500));
+    }
+
+    // Also include search snippet from other results
+    if (articles.length > 1) {
+      results.push('');
+      results.push('--- Related Articles ---');
+      for (let i = 1; i < Math.min(articles.length, 3); i++) {
+        const snippet = articles[i].snippet
+          ?.replace(/<[^>]+>/g, '')
+          ?.trim();
+        if (snippet) {
+          results.push(`• ${articles[i].title}: ${snippet}`);
+        }
+      }
+    }
+
+    results.push('');
+    results.push('(Source: Wikipedia)');
+
+    return results.join('\n');
+  } catch (error) {
+    console.warn('Wikipedia deep search failed:', error);
+    return null;
+  }
+}
+
+// ─── Helper: Extract search subject from natural language query ─
+// Strips question words, filler, and grammar to get the core subject.
+// "who is present CEO of opentext?" → "opentext"
+// "what is the capital of France?" → "France"  
+// "tell me about quantum computing" → "quantum computing"
+// "how tall is the Eiffel Tower?" → "Eiffel Tower"
+
+function extractSearchSubject(query: string): string {
+  let subject = query.trim();
+
+  // Remove trailing punctuation
+  subject = subject.replace(/[?!.]+$/g, '').trim();
+
+  // Strip leading question words and filler
+  subject = subject
+    .replace(/^(who|what|where|when|why|how|which|whose|whom)\s+(is|are|was|were|does|do|did|can|could|will|would|should|has|have|had)\s+(the\s+)?(present|current|new|latest|recent|former|previous|first|last|acting|interim)?\s*/i, '')
+    .replace(/^(tell\s+me\s+about|explain|describe|define|search\s+for|look\s+up|find|show\s+me|give\s+me\s+info\s+on|info\s+on|information\s+about)\s+(the\s+)?/i, '')
+    .replace(/^(what'?s?|who'?s?)\s+(the\s+)?/i, '')
+    .trim();
+
+  // Handle "X of Y" patterns — extract the Y (the subject entity)
+  // "CEO of opentext" → "opentext", "capital of France" → "France"
+  // But keep compound concepts: "history of computing" → "computing"
+  const ofMatch = subject.match(/^(?:ceo|chief\s+executive\s+officer|president|founder|chairman|cto|cfo|coo|head|director|capital|population|currency|language|flag|anthem|leader|prime\s+minister|king|queen|mayor|governor)\s+of\s+(.+)/i);
+  if (ofMatch) {
+    subject = ofMatch[1].trim();
+  }
+
+  // Remove trailing filler words
+  subject = subject.replace(/\s+(today|now|currently|right now|at present|these days|in \d{4})$/i, '').trim();
+
+  // If empty after extraction, fall back to original
+  if (!subject || subject.length < 2) {
+    subject = query.replace(/[?!.]+$/g, '').trim();
+  }
+
+  return subject;
 }
 
 // ─── Extraction Helpers for New Tools ──────────────────────
