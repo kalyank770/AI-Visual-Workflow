@@ -801,25 +801,50 @@ def tool_currency(from_currency: str, to_currency: str, amount: float = 1.0) -> 
 
 
 def run_tools(prompt: str) -> list[str]:
-    """Detect what tools to call based on the prompt and execute them.
-    Tries LLM-based tool selection first, falls back to regex heuristics."""
-
-    # ─── Try LLM-based tool selection first ───
+    """
+    Intelligently route query to tools using LLM-based selection (primary) 
+    with regex fallback for safety.
+    
+    RULE: If LLM successfully parses and selects tools, USE THEM (even if execution returns no data).
+    Only fall back to regex if LLM fails completely (timeout, parse error, etc).
+    """
+    
+    # ════════════════════════════════════════════════════════════════
+    #  PHASE 1: LLM-BASED TOOL SELECTION (PRIMARY METHOD)
+    # ════════════════════════════════════════════════════════════════
     llm_tools = _llm_select_tools(prompt)
+    
     if llm_tools:
+        _log(f"LLM tool selection succeeded. Tools selected: {[t['tool'] for t in llm_tools]}")
         results: list[str] = []
-        for tc in llm_tools:
-            r = _execute_tool_call(tc["tool"], tc["entity"], original_prompt=prompt)
-            if r:
-                results.append(r)
+        for tool_call in llm_tools:
+            tool_name = tool_call["tool"]
+            entity = tool_call["entity"]
+            _log(f"  Executing LLM-selected tool: {tool_name} with entity: {entity}")
+            
+            result = _execute_tool_call(tool_name, entity, original_prompt=prompt)
+            if result:
+                results.append(result)
+                _log(f"    ✓ {tool_name} returned data")
+            else:
+                _log(f"    ✗ {tool_name} returned no data (entity might be invalid)")
+        
+        # CRITICAL: If LLM selected tools, ALWAYS return (don't fall back to regex)
+        # Even if some/all tools returned no data, that's the correct routing
         if results:
-            _log(f"TOOLS (LLM): {len(results)} tool(s) returned results")
+            _log(f"✓ TOOLS (LLM ROUTING): {len(results)} tool(s) executed successfully")
             return results
-        _log("TOOLS: LLM tool calls returned no data, falling back to regex")
-
-    # ─── Regex Fallback ───
-    _log("TOOLS: using regex-based tool selection")
+        else:
+            _log(f"⚠ TOOLS (LLM ROUTING): All {len(llm_tools)} tool(s) returned no data, but trusting LLM routing → empty result")
+            # Return a signal that routing was correct but data was unavailable
+            return [f"Tool [LLM-routing-success]: Query routed to {[t['tool'] for t in llm_tools]} but no data available"]
+    
+    # ════════════════════════════════════════════════════════════════
+    #  PHASE 2: REGEX FALLBACK (Only if LLM fails completely)
+    # ════════════════════════════════════════════════════════════════
+    _log("✗ LLM tool selection FAILED (timeout/parse error) → falling back to regex")
     return _regex_run_tools(prompt)
+
 
 
 def _regex_run_tools(prompt: str) -> list[str]:
@@ -962,10 +987,13 @@ def _regex_run_tools(prompt: str) -> list[str]:
         city = _extract_entity(
             prompt,
             [
-                r"weather\s+(?:in|at|for)\s+(.+?)(?:\?|$|today|tomorrow)",
+                # Handle "weather [today/tomorrow/now] in X"
+                r"weather\s+(?:today|tomorrow|now|currently|right now)?\s+(?:in|at|for)\s+(.+?)(?:\?|$)",
+                # Handle "weather in X [today/tomorrow]"
+                r"weather\s+(?:in|at|for)\s+(.+?)(?:\s+(?:today|tomorrow|now))?(?:\?|$)",
                 r"(?:temperature|forecast)\s+(?:in|at|for)\s+(.+?)(?:\?|$)",
                 r"(?:how|what).*(?:weather|temperature)\s+(?:in|at)\s+(.+?)(?:\?|$)",
-                r"(?:is\s+it|it)\s+(?:rain|snow|cloud).*(?:in|at)\s+(.+?)(?:\?|$)",
+                r"(?:is\s+it|it|is\s+the)\s+(?:rain|snow|cloud).*(?:in|at)\s+(.+?)(?:\?|$)",
                 r"(?:rain|snow|cloud).*(?:in|at)\s+(.+?)(?:\?|$)",
             ],
         )
@@ -1267,43 +1295,54 @@ Respond with ONLY valid JSON (no markdown, no explanation):
 {"route": "<route>", "reasoning": "<one sentence>"}"""
 
 _TOOL_SELECTOR_PROMPT = """\
-You are a tool selector. Given the user's query, pick the best tool(s) and extract the entity.
+You are an intelligent tool selector. Given a user's query, pick the CORRECT tool(s) and extract the CLEAN entity.
 
-Available tools:
-- "stock_price": Current/live stock price. Entity = company name or ticker (e.g. "nvidia", "AAPL").
-- "stock_analysis": Stock trend data for predictions, forecasts, outlooks. Entity = company name or ticker.
-- "weather": Current weather or temperature. Entity = city/location name.
-- "currency": Convert between currencies. Entity = comma-separated pair (e.g. "USD,INR" or "euro,rupee"). Amount extracted from query.
-- "world_clock": Current time in a location. Entity = city or timezone (default "UTC").
-- "dictionary": Word definition or meaning. Entity = the single word.
-- "calculator": Evaluate a math expression. Entity = the expression (e.g. "2+2", "sqrt(144)").
-- "wikipedia": Factual info about a person, place, thing, concept. Entity = topic.
-- "web_search": General web search for anything not covered above. Entity = concise search query.
+=== AVAILABLE TOOLS ===
+- "stock_price": Current/live stock price. Entity = company name or ticker ONLY (e.g. "nvidia", "AAPL").
+- "stock_analysis": Stock trend prediction/forecast. Entity = company name or ticker ONLY.
+- "weather": Current weather, temperature, conditions. Entity = city or location name ONLY.
+- "currency": Currency conversion. Entity = "from_currency,to_currency" pair (e.g. "USD,INR", "EUR,GBP").
+- "world_clock": Current time in a timezone/city. Entity = city or IANA timezone (default "UTC").
+- "dictionary": Word definition. Entity = single word to define.
+- "calculator": Math expression. Entity = mathematical expression (e.g. "2+2", "sqrt(144)").
+- "wikipedia": Factual info about people, places, concepts, companies. Entity = topic name ONLY.
+- "web_search": General web search fallback. Entity = concise search query.
 
-Rules:
-1. For stock prediction/forecast queries → use BOTH "stock_analysis" (for trend data) AND "wikipedia" (for company background). Set wikipedia entity to the COMPANY NAME (not ticker, not stock terms).
-   Example: "OTEX stock prediction" → [{"tool":"stock_analysis","entity":"OTEX"},{"tool":"wikipedia","entity":"OpenText"}]
-   Example: "predict apple stock" → [{"tool":"stock_analysis","entity":"apple"},{"tool":"wikipedia","entity":"Apple Inc"}]
-2. For current stock price → use "stock_price" only.
-3. For currency conversion (e.g., "100 USD to INR", "euro to rupee") → use "currency". Entity should be "from_currency,to_currency" (e.g., "USD,INR" or "EUR,GBP").
-4. For "who is X" or "tell me about X" → use "wikipedia".
-5. For weather forecasts (no stock context) → use "weather".
-6. For time queries → use "world_clock".
-7. Extract CLEAN entities — no filler words (the, about, for, please, etc.).
-8. If uncertain, default to "web_search".
-9. Entity MUST be ONLY the core subject — never include extra words like "stock", "price",
-   "prediction", "weather", time-frame phrases like "2months", "next year", etc.
-   CRITICAL: The entity for stock tools is ALWAYS the company/ticker, NEVER a duration.
-   Examples:
-   - "predict apple stock for next 3 months" → entity="apple" (NOT "3 months")
-   - "google stock prediction for 2months" → entity="google" (NOT "2months")
-   - "TSLA stock price" → entity="TSLA"
-   - "weather forecast in London tomorrow" → entity="London"
-   - "who is the CEO of nvidia" → entity="nvidia"
-   - "100 USD to INR" → use currency tool with entity="USD,INR"
-   - "euro to indian rupee" → use currency tool with entity="EUR,INR"
+=== CRITICAL RULES FOR ENTITY EXTRACTION ===
+1. TEMPORAL MODIFIERS ARE NOT PART OF ENTITY:
+   - "weather TODAY in London" -> tool="weather", entity="London" (NOT "today London")
+   - "weather TOMORROW in Paris" -> tool="weather", entity="Paris"
+   - "weather NOW in Tokyo" -> tool="weather", entity="Tokyo"
+   - "what's weather CURRENTLY in Sydney" -> tool="weather", entity="Sydney"
+   
+2. TIME-FRAME PHRASES ARE NOT PART OF ENTITY:
+   - "stock prediction FOR NEXT 3 MONTHS of apple" -> tool="stock_analysis", entity="apple" (NOT "3 months apple")
+   - "OTEX stock forecast for 2 MONTHS" -> tool="stock_analysis", entity="OTEX"
+   - "predict TESLA stock FOR NEXT QUARTER" -> tool="stock_analysis", entity="TESLA"
 
-Respond with ONLY a valid JSON array (no markdown, no explanation):
+3. ACTION WORDS ARE NOT PART OF ENTITY:
+   - "CALCULATE 15+27" -> tool="calculator", entity="15+27"
+   - "DEFINE serendipity" -> tool="dictionary", entity="serendipity"
+   - "Time IN Tokyo" -> tool="world_clock", entity="Tokyo"
+
+4. FOR STOCK PREDICTION QUERIES -> ALWAYS return BOTH tools:
+   - [{"tool":"stock_analysis", "entity":"<ticker/company>"}, {"tool":"wikipedia", "entity":"<company_name>"}]
+   - Example: "will apple stock go up next year" -> [{"tool":"stock_analysis","entity":"apple"},{"tool":"wikipedia","entity":"Apple Inc"}]
+   - Example: "OTEX stock forecast for 3 months" -> [{"tool":"stock_analysis","entity":"OTEX"},{"tool":"wikipedia","entity":"OpenText"}]
+
+5. ENTITY MUST BE CLEAN:
+   - No filler words (the, a, an, about, for, please, tell, me, what, is, will, how, etc.)
+   - No temporal words (today, tomorrow, now, currently, next, last, etc.)
+   - No duration words (months, years, weeks, days, quarters)
+   - No action words (predict, forecast, analyze, calculate, define, etc.)
+   - Just the CORE SUBJECT
+
+6. SPECIAL CASES:
+   - Currency: "100 USD to INR" -> tool="currency", entity="USD,INR" (amount ignored, derived from query)
+   - Weather: "is it raining in Seattle" -> tool="weather", entity="Seattle"
+   - Time: "5pm UTC to IST" -> tool="world_clock", entity="UTC" then call again for "IST"
+
+Respond with ONLY a valid JSON array (no markdown, no explanation, no code blocks):
 [{"tool": "<name>", "entity": "<clean_entity>"}]"""
 
 
@@ -1421,39 +1460,86 @@ def _postprocess_llm_tools(tools: list[dict], prompt: str) -> list[dict]:
 
 
 def _llm_select_tools(prompt: str) -> list[dict] | None:
-    """Use the LLM to pick which tool(s) to call + extract entities. Returns list of {tool, entity} or None."""
+    """
+    Use the LLM to pick which tool(s) to call + extract entities.
+    Returns list of {tool, entity} or None (only if LLM fails completely).
+    More lenient parsing to reduce false negatives.
+    """
     response, model = call_llm(
         [{"role": "user", "content": prompt}],
         system_prompt=_TOOL_SELECTOR_PROMPT,
     )
     if not response:
+        _log(f"LLM tool select: no response from {model}")
         return None
 
     try:
-        cleaned = re.sub(r"```(?:json)?\s*", "", response).strip().rstrip("`")
+        # Strategy 1: Try to clean and parse as JSON
+        cleaned = re.sub(r"```(?:json)?\s*", "", response).strip().rstrip("`").strip()
         data = json.loads(cleaned)
+        
+        # Normalize format (single dict → list of dicts)
         if isinstance(data, dict):
             data = [data]
+        
+        # Validate structure
         valid_tools = {
             "stock_price", "stock_analysis", "weather", "wikipedia",
             "dictionary", "calculator", "world_clock", "web_search", "currency",
         }
-        if isinstance(data, list) and data and all(
-            isinstance(d, dict) and "tool" in d and "entity" in d for d in data
-        ):
-            for d in data:
-                d["tool"] = d["tool"].lower().strip()
-                if d["tool"] not in valid_tools:
-                    d["tool"] = "web_search"
-                d["entity"] = str(d.get("entity", "")).strip()
-            _log(f"LLM tool select → {data} via {model}")
-            # Deterministic post-processing: fix known LLM mistakes
-            data = _postprocess_llm_tools(data, prompt)
-            return data
-    except (json.JSONDecodeError, AttributeError, KeyError):
-        pass
-
-    _log(f"LLM tool select: could not parse response: {response[:200]}")
+        
+        if isinstance(data, list) and len(data) > 0:
+            # Check if items have required fields (lenient check)
+            valid_items = [d for d in data if isinstance(d, dict) and "tool" in d and "entity" in d]
+            
+            if valid_items:
+                # Clean up each item
+                for d in valid_items:
+                    d["tool"] = str(d["tool"]).lower().strip()
+                    # Fallback unknown tools to web_search
+                    if d["tool"] not in valid_tools:
+                        d["tool"] = "web_search"
+                    d["entity"] = str(d.get("entity", "")).strip()
+                
+                _log(f"✓ LLM tool select (parsed): {[{'tool': d['tool'], 'entity': d['entity'][:30]} for d in valid_items]} via {model}")
+                
+                # Deterministic post-processing: fix known LLM mistakes
+                data = _postprocess_llm_tools(valid_items, prompt)
+                return data
+    
+    except (json.JSONDecodeError, AttributeError, KeyError, TypeError) as e:
+        _log(f"LLM tool select: JSON parse error: {e}")
+    
+    # Strategy 2: Try to extract pattern from free-text response
+    try:
+        # Look for keyword mentions that indicate tool choice
+        response_lower = response.lower()
+        tools_found = []
+        
+        if "weather" in response_lower:
+            # Extract location (anything in "in <location>" pattern)
+            loc_match = re.search(r"(?:weather\s+)?in\s+([^,\.]+)", response, re.IGNORECASE)
+            if loc_match:
+                tools_found.append({"tool": "weather", "entity": loc_match.group(1).strip()})
+        
+        if "stock" in response_lower and ("predict" in response_lower or "forecast" in response_lower):
+            # Extract ticker/company
+            entity_match = re.search(r'(?:entity|stock|ticker|company)[\s:="′\']+([A-Za-z0-9\s]+)', response, re.IGNORECASE)
+            if entity_match:
+                tools_found.append({"tool": "stock_analysis", "entity": entity_match.group(1).strip()})
+        
+        if "time" in response_lower:
+            tz_match = re.search(r'(?:timezone|city|entity)[\s:="′\']+([A-Za-z0-9/\s]+)', response, re.IGNORECASE)
+            if tz_match:
+                tools_found.append({"tool": "world_clock", "entity": tz_match.group(1).strip()})
+        
+        if tools_found:
+            _log(f"✓ LLM tool select (free-text fallback): {tools_found} via {model}")
+            return tools_found
+    except Exception as e:
+        _log(f"LLM tool select: free-text parse error: {e}")
+    
+    _log(f"✗ LLM tool select: could not parse response from {model}: {response[:150]}")
     return None
 
 
