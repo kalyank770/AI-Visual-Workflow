@@ -1,0 +1,2067 @@
+#!/usr/bin/env python3
+"""
+============================================================
+ AI Visual Workflow — Real LangGraph Orchestrator
+============================================================
+
+A production-grade LangGraph workflow implementing the agentic
+architecture visualized by the frontend:
+
+  Prompt → Intent Classification → Conditional Routing:
+    ├─ RAG Path:    TF-IDF Retrieval → Re-rank → Context
+    ├─ MCP Path:    Tool Selection → Real API Calls
+    ├─ Hybrid Path: RAG + MCP combined
+    └─ Direct Path: LLM-only (or template) response
+
+All tool calls use FREE public APIs — no API keys required.
+Optional LLM integration (set INTERNAL_API_KEY or GEMINI_API_KEY).
+
+Usage:
+  python langgraph_workflow.py "What is the weather in London?"
+  python langgraph_workflow.py "AAPL stock price"
+  python langgraph_workflow.py "What is RAG in AI?"
+
+Requirements:
+  pip install -r requirements.txt
+============================================================
+"""
+from __future__ import annotations
+
+import os
+import re
+import sys
+import json
+import math
+import time
+import operator
+from collections import Counter
+from datetime import datetime, timezone, timedelta
+from typing import TypedDict, Annotated, Any
+
+# ── Optional .env loading ───────────────────────────────────
+try:
+    from dotenv import load_dotenv
+    _env_path = os.path.join(os.path.dirname(__file__), '..', '.env')
+    _loaded = False
+    for _enc in ("utf-8-sig", "utf-8", "utf-16"):
+        try:
+            load_dotenv(encoding=_enc)
+            load_dotenv(_env_path, encoding=_enc)
+            _loaded = True
+            break
+        except (UnicodeDecodeError, UnicodeError):
+            continue
+    if not _loaded:
+        try:
+            load_dotenv()
+            load_dotenv(_env_path)
+        except Exception:
+            pass
+except ImportError:
+    pass  # dotenv is optional; continue without it
+
+# ── Required dependencies ───────────────────────────────────
+try:
+    import httpx
+except ImportError:
+    sys.exit("Error: httpx required. Run: pip install httpx")
+
+try:
+    from langgraph.graph import StateGraph, START, END
+except ImportError:
+    try:
+        from langgraph.graph import StateGraph, END
+        START = "__start__"
+    except ImportError:
+        sys.exit("Error: langgraph required. Run: pip install langgraph")
+
+
+# ═══════════════════════════════════════════════════════════
+#  CONFIGURATION
+# ═══════════════════════════════════════════════════════════
+
+INTERNAL_MODEL_ENDPOINT = os.environ.get(
+    "INTERNAL_MODEL_ENDPOINT",
+    "https://model-broker.aviator-model.bp.anthos.otxlab.net/v1/chat/completions",
+)
+INTERNAL_MODEL_NAME = os.environ.get("INTERNAL_MODEL_NAME", "llama-3.3-70b")
+LLM_TIMEOUT = int(os.environ.get("LLM_TIMEOUT", "8"))
+HTTP_TIMEOUT = int(os.environ.get("HTTP_TIMEOUT", "10"))
+
+
+def _log(msg: str):
+    """Print debug message when VERBOSE is enabled."""
+    if os.environ.get("VERBOSE", "").lower() == "true":
+        # Replace Unicode arrows with ASCII equivalents for Windows console compatibility
+        msg = msg.replace("→", "->").replace("←", "<-").replace("↔", "<->")
+        print(f"  [WORKFLOW] {msg}")
+
+
+# ═══════════════════════════════════════════════════════════
+#  BUILT-IN KNOWLEDGE BASE (for RAG)
+# ═══════════════════════════════════════════════════════════
+
+KNOWLEDGE_BASE = [
+    {
+        "title": "Agentic AI Architecture Guide",
+        "content": (
+            "An agentic AI system is an autonomous software agent that perceives its "
+            "environment, makes decisions, and takes actions to achieve goals without "
+            "continuous human guidance. Core components include: (1) Orchestrator "
+            "(LangGraph/LangChain) — the central controller managing state, routing "
+            "requests, and coordinating between the LLM, tools, and memory. It implements "
+            "a directed graph where nodes represent processing steps and edges represent "
+            "transitions. State is persisted to Redis or PostgreSQL for fault tolerance. "
+            "(2) Large Language Model — the reasoning engine that generates plans, evaluates "
+            "tool outputs, and synthesizes final responses. Models like Llama 3.3 70B or "
+            "GPT-4 with function calling capabilities are used. (3) RAG — Retrieval-Augmented "
+            "Generation augments LLM responses with relevant documents from a vector database. "
+            "The pipeline includes query expansion, embedding generation, similarity search, "
+            "and re-ranking. (4) Vector Database — stores document embeddings as high-dimensional "
+            "vectors supporting nearest-neighbor search using HNSW algorithms. Options include "
+            "Pinecone, ChromaDB, Weaviate, and pgvector. (5) Tool Integration (MCP) — Model "
+            "Context Protocol provides a standardized interface for agents to interact with "
+            "external services, APIs, databases, and enterprise applications. The agent follows "
+            "a Plan-Execute-Evaluate cycle with bounded iteration to prevent infinite loops."
+        ),
+    },
+    {
+        "title": "RAG Pipeline Best Practices",
+        "content": (
+            "Retrieval-Augmented Generation (RAG) grounds LLM responses in enterprise "
+            "knowledge. Document ingestion involves format parsing, cleaning, chunking into "
+            "200-500 token overlapping segments, and metadata extraction. Chunking strategies "
+            "include fixed-size, semantic (sentence boundaries), recursive, and document-aware "
+            "approaches. Embeddings are generated using models like text-embedding-004 (768 "
+            "dimensions) or text-embedding-3-large (3072 dimensions). Hybrid search combines "
+            "vector similarity with keyword search (BM25) via Reciprocal Rank Fusion (RRF). "
+            "Re-ranking uses cross-encoder models like ms-marco-MiniLM to sort results by "
+            "true relevance. Query expansion generates multiple reformulations for better "
+            "recall: synonym expansion, HyDE (Hypothetical Document Embedding), and multi-query "
+            "generation. Evaluation metrics include Precision@K, Recall@K, MRR (Mean Reciprocal "
+            "Rank), NDCG (Normalized Discounted Cumulative Gain), and Faithfulness which "
+            "measures whether the LLM stays grounded in retrieved context."
+        ),
+    },
+    {
+        "title": "LangGraph Orchestration Patterns",
+        "content": (
+            "LangGraph builds stateful multi-step agent workflows as directed graphs. Graph "
+            "state is a TypedDict flowing through every node, containing messages, plan, "
+            "tool_results, and context. Conditional edges determine the next node at runtime "
+            "based on current state — routing to RAG, tools, or synthesis nodes depending on "
+            "the classified intent. Checkpointing saves state after each node for fault "
+            "tolerance, human-in-the-loop validation, and time-travel debugging. Subgraph "
+            "composition decomposes complex workflows: research subgraph (query expansion → "
+            "vector search → re-ranking), tool execution subgraph (selection → validation → "
+            "API call → parsing), synthesis subgraph (context assembly → generation → citation "
+            "linking). Error handling includes retry with backoff, fallback nodes, graceful "
+            "degradation, and human escalation. Loop detection prevents infinite recursion via "
+            "max iteration limits, cycle detection, and timeout-based circuit breakers. "
+            "Streaming supports token-level LLM output and node-level completion events."
+        ),
+    },
+    {
+        "title": "MCP Protocol Specification",
+        "content": (
+            "The Model Context Protocol (MCP) is an open standard by Anthropic for connecting "
+            "AI agents to external tools and data sources. It uses JSON-RPC 2.0 over stdio or "
+            "HTTP/SSE transport. The protocol supports tool discovery (listing available tools "
+            "with schemas), tool execution (calling tools with validated parameters), resource "
+            "access (files, databases, APIs), and prompt templates. Each tool is registered "
+            "with a name, description, input_schema (JSON Schema), and output format. "
+            "Authentication supports API keys, OAuth 2.0, mTLS, and custom adapters. Security "
+            "features include sandbox execution in isolated containers, input validation "
+            "against schemas, output sanitization, rate limiting, and audit logging. Enterprise "
+            "integration enables CRM queries, ERP operations, ITSM ticket management, knowledge "
+            "base searches, and communication tools like email, Slack, and Teams notifications."
+        ),
+    },
+    {
+        "title": "OpenText Corporate & Product Overview",
+        "content": (
+            "OpenText Corporation is a Canadian enterprise information management company "
+            "founded in 1991, headquartered in Waterloo, Ontario. It trades on NASDAQ and TSX "
+            "as OTEX. OpenText acquired Micro Focus in 2023 for approximately $5.8 billion, "
+            "expanding into DevOps, IT operations, and application modernization. Key products: "
+            "Content Server (enterprise content management), Documentum (content services "
+            "platform), Extended ECM (content in business process context), Trading Grid (B2B "
+            "integration network), TeamSite (web CMS), Exstream (customer communications), "
+            "Fortify (application security testing), ArcSight (SIEM threat detection), NetIQ "
+            "(identity and access management), Voltage (data-centric encryption), EnCase "
+            "(digital forensics), LoadRunner (performance testing), SMAX (IT service management "
+            "with ML), Magellan (AI and analytics platform), and Aviator (next-generation AI "
+            "platform leveraging LLMs for intelligent search, content summarization, and "
+            "conversational AI assistants). Cloud Editions (CE) deliver quarterly releases on "
+            "AWS, Azure, and Google Cloud."
+        ),
+    },
+]
+
+
+# ═══════════════════════════════════════════════════════════
+#  RAG ENGINE — TF-IDF retrieval, zero external dependencies
+# ═══════════════════════════════════════════════════════════
+
+
+class RAGEngine:
+    """Lightweight retrieval engine using TF-IDF vectorization and cosine similarity."""
+
+    def __init__(self, documents: list[dict], chunk_size: int = 300, chunk_overlap: int = 60):
+        self.chunks: list[dict] = []
+        self.idf: dict[str, float] = {}
+        self.chunk_vectors: list[dict[str, float]] = []
+        self._chunk_documents(documents, chunk_size, chunk_overlap)
+        self._build_index()
+        _log(f"RAG Engine: {len(documents)} docs → {len(self.chunks)} chunks indexed")
+
+    @staticmethod
+    def _tokenize(text: str) -> list[str]:
+        """Split text into lowercase alphanumeric tokens."""
+        return re.findall(r"[a-z0-9]+", text.lower())
+
+    def _chunk_documents(self, docs: list[dict], size: int, overlap: int):
+        """Split documents into overlapping chunks, breaking at sentence boundaries."""
+        for doc in docs:
+            text = doc["content"]
+            title = doc["title"]
+            pos, idx = 0, 0
+            while pos < len(text):
+                end = min(pos + size, len(text))
+                # Try to break at a sentence boundary
+                if end < len(text):
+                    last_period = text.rfind(". ", pos, end)
+                    if last_period > pos + size // 2:
+                        end = last_period + 2
+                self.chunks.append(
+                    {
+                        "content": text[pos:end].strip(),
+                        "source": title,
+                        "chunk_index": idx,
+                        "char_start": pos,
+                        "char_end": end,
+                    }
+                )
+                pos = max(pos + 1, end - overlap)
+                idx += 1
+
+    def _build_index(self):
+        """Compute IDF across the corpus and TF-IDF vectors per chunk."""
+        N = len(self.chunks)
+        if N == 0:
+            return
+        all_tokens = [self._tokenize(c["content"]) for c in self.chunks]
+        # Inverse Document Frequency
+        doc_freq: dict[str, int] = {}
+        for tokens in all_tokens:
+            for t in set(tokens):
+                doc_freq[t] = doc_freq.get(t, 0) + 1
+        self.idf = {t: math.log((N + 1) / (1 + df)) for t, df in doc_freq.items()}
+        # TF-IDF vectors
+        for tokens in all_tokens:
+            tf = Counter(tokens)
+            total = len(tokens) or 1
+            vec = {t: (c / total) * self.idf.get(t, 0) for t, c in tf.items()}
+            self.chunk_vectors.append(vec)
+
+    @staticmethod
+    def _cosine_sim(v1: dict[str, float], v2: dict[str, float]) -> float:
+        """Compute cosine similarity between two sparse TF-IDF vectors."""
+        shared = set(v1) & set(v2)
+        if not shared:
+            return 0.0
+        dot = sum(v1[k] * v2[k] for k in shared)
+        n1 = math.sqrt(sum(x * x for x in v1.values()))
+        n2 = math.sqrt(sum(x * x for x in v2.values()))
+        return dot / (n1 * n2) if n1 and n2 else 0.0
+
+    def search(self, query: str, top_k: int = 5) -> list[dict]:
+        """Search the index for chunks most relevant to the query."""
+        tokens = self._tokenize(query)
+        if not tokens:
+            return []
+        tf = Counter(tokens)
+        total = len(tokens)
+        q_vec = {t: (c / total) * self.idf.get(t, 0) for t, c in tf.items()}
+        scored = []
+        for i, c_vec in enumerate(self.chunk_vectors):
+            score = self._cosine_sim(q_vec, c_vec)
+            if score > 0.01:
+                scored.append((score, i))
+        scored.sort(key=lambda x: -x[0])
+        return [
+            {"chunk": self.chunks[i], "score": round(s, 4), "method": "tfidf"}
+            for s, i in scored[:top_k]
+        ]
+
+
+# Singleton RAG engine — initialized once at import time
+_rag_engine = RAGEngine(KNOWLEDGE_BASE)
+
+
+# ═══════════════════════════════════════════════════════════
+#  TOOL IMPLEMENTATIONS — Real APIs, no keys needed
+# ═══════════════════════════════════════════════════════════
+
+
+def _http_get(url: str, headers: dict | None = None) -> Any | None:
+    """Safe HTTP GET returning parsed JSON or None on failure."""
+    try:
+        h = {"User-Agent": "AIVisualWorkflow/2.0 (educational project; contact@example.com)"}
+        if headers:
+            h.update(headers)
+        resp = httpx.get(url, headers=h, timeout=HTTP_TIMEOUT, follow_redirects=True)
+        if resp.status_code == 200:
+            return resp.json()
+    except Exception as e:
+        _log(f"HTTP GET failed ({url[:80]}): {e}")
+    return None
+
+
+# Well-known company → ticker map (instant, no network needed)
+_COMMON_TICKERS: dict[str, str] = {
+    "apple": "AAPL", "microsoft": "MSFT", "google": "GOOGL", "alphabet": "GOOGL",
+    "amazon": "AMZN", "meta": "META", "facebook": "META", "tesla": "TSLA",
+    "nvidia": "NVDA", "amd": "AMD", "advanced micro devices": "AMD",
+    "intel": "INTC", "netflix": "NFLX", "disney": "DIS", "walmart": "WMT",
+    "coca cola": "KO", "coca-cola": "KO", "pepsi": "PEP", "pepsico": "PEP",
+    "boeing": "BA", "ibm": "IBM", "oracle": "ORCL", "salesforce": "CRM",
+    "adobe": "ADBE", "paypal": "PYPL", "uber": "UBER", "spotify": "SPOT",
+    "snap": "SNAP", "pinterest": "PINS", "zoom": "ZM",
+    "opentext": "OTEX", "open text": "OTEX", "otex": "OTEX",
+    "berkshire hathaway": "BRK-B", "jpmorgan": "JPM", "jp morgan": "JPM",
+    "goldman sachs": "GS", "bank of america": "BAC", "wells fargo": "WFC",
+    "citigroup": "C", "visa": "V", "mastercard": "MA",
+    "american express": "AXP", "nike": "NKE", "starbucks": "SBUX",
+    "costco": "COST", "target": "TGT", "home depot": "HD",
+    "exxon": "XOM", "exxonmobil": "XOM", "chevron": "CVX",
+    "pfizer": "PFE", "moderna": "MRNA", "airbnb": "ABNB",
+    "palantir": "PLTR", "snowflake": "SNOW", "crowdstrike": "CRWD",
+    "shopify": "SHOP", "ford": "F", "general motors": "GM",
+    "general electric": "GE", "3m": "MMM", "caterpillar": "CAT",
+    "mcdonald's": "MCD", "mcdonalds": "MCD", "cisco": "CSCO",
+    "qualcomm": "QCOM", "broadcom": "AVGO", "micron": "MU",
+    "dell": "DELL", "hp": "HPQ", "sony": "SONY", "samsung": "SSNLF",
+    "databricks": "DBX", "dropbox": "DBX", "twilio": "TWLO",
+    "roku": "ROKU", "roblox": "RBLX", "coinbase": "COIN",
+    "robinhood": "HOOD", "lucid": "LCID", "rivian": "RIVN",
+    "nio": "NIO", "li auto": "LI", "xpeng": "XPEV",
+}
+
+
+def _resolve_ticker(query: str) -> str | None:
+    """Resolve a company name or ticker to a Yahoo Finance ticker symbol.
+
+    Priority chain:
+      1. Common tickers map (instant, no network)
+      2. Yahoo Finance search API (handles everything else)
+      3. Fallback: trust short uppercase input as raw ticker
+    """
+    stripped = query.strip()
+    key = stripped.lower()
+
+    # 1. Instant lookup from common map
+    if key in _COMMON_TICKERS:
+        _log(f"Resolved '{query}' → {_COMMON_TICKERS[key]} (common map)")
+        return _COMMON_TICKERS[key]
+
+    # 2. Yahoo Finance search (always try, even for uppercase input like "APPLE")
+    search_terms = [stripped]
+    if not re.match(r"^[A-Z]{1,5}$", stripped):
+        search_terms.extend([f"{stripped} corporation", f"{stripped} company", f"{stripped} inc"])
+    for term in search_terms:
+        data = _http_get(
+            f"https://query2.finance.yahoo.com/v1/finance/search"
+            f"?q={term}&quotesCount=5&newsCount=0&listsCount=0"
+        )
+        if not data:
+            continue
+        quotes = [
+            q for q in data.get("quotes", [])
+            if q.get("quoteType") in ("EQUITY", "ETF")
+        ]
+        if quotes:
+            _log(f"Resolved '{query}' → {quotes[0]['symbol']} (via '{term}')")
+            return quotes[0]["symbol"]
+
+    # 3. Last resort: if input was short uppercase, trust it as a raw ticker
+    if re.match(r"^[A-Z]{1,4}$", stripped):
+        _log(f"Resolved '{query}' → {stripped} (assumed ticker, Yahoo search failed)")
+        return stripped
+
+    return None
+
+
+def tool_stock_price(query: str) -> str | None:
+    """Fetch real stock price from Yahoo Finance (free, no key)."""
+    ticker = _resolve_ticker(query)
+    if not ticker:
+        _log(f"stock_price: no ticker found for '{query}'")
+        return None
+    # Get price data
+    data = _http_get(
+        f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range=5d"
+    )
+    if not data:
+        return None
+    result = (data.get("chart") or {}).get("result", [None])[0]
+    if not result:
+        _log(f"stock_price: chart data empty for ticker '{ticker}'")
+        return None
+    meta = result["meta"]
+    price = meta["regularMarketPrice"]
+    prev = meta.get("chartPreviousClose", meta.get("previousClose", price))
+    change = price - prev
+    pct = (change / prev * 100) if prev else 0
+    cur = meta.get("currency", "USD")
+    name = meta.get("shortName", ticker)
+    exchange = meta.get("exchangeName", "N/A")
+    return (
+        f"{name} ({ticker}) on {exchange}: {cur} {price:.2f} | "
+        f"Change: {'+'if change>=0 else ''}{change:.2f} ({pct:+.2f}%) | "
+        f"Prev Close: {cur} {prev:.2f}"
+    )
+
+
+def tool_weather(city: str) -> str | None:
+    """Fetch real weather from Open-Meteo (free, no key)."""
+    geo = _http_get(
+        f"https://geocoding-api.open-meteo.com/v1/search?name={city}&count=1&language=en"
+    )
+    if not geo or not geo.get("results"):
+        return None
+    loc = geo["results"][0]
+    lat, lon = loc["latitude"], loc["longitude"]
+    name = loc.get("name", city)
+    country = loc.get("country", "")
+    weather = _http_get(
+        f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
+        f"&current=temperature_2m,relative_humidity_2m,apparent_temperature,"
+        f"weather_code,wind_speed_10m"
+        f"&daily=temperature_2m_max,temperature_2m_min&timezone=auto&forecast_days=3"
+    )
+    if not weather or "current" not in weather:
+        return None
+    cur = weather["current"]
+    codes = {
+        0: "Clear sky", 1: "Mainly clear", 2: "Partly cloudy", 3: "Overcast",
+        45: "Foggy", 48: "Rime fog", 51: "Light drizzle", 53: "Moderate drizzle",
+        55: "Dense drizzle", 61: "Slight rain", 63: "Moderate rain", 65: "Heavy rain",
+        71: "Slight snow", 73: "Moderate snow", 75: "Heavy snow",
+        80: "Showers", 81: "Moderate showers", 82: "Heavy showers",
+        95: "Thunderstorm", 96: "Thunderstorm with hail",
+    }
+    condition = codes.get(cur.get("weather_code", -1), f"Code {cur.get('weather_code')}")
+    temp_f = cur["temperature_2m"] * 9 / 5 + 32
+    feels_f = cur["apparent_temperature"] * 9 / 5 + 32
+    # 3-day forecast
+    daily = weather.get("daily", {})
+    forecast = ""
+    if daily.get("time"):
+        days = []
+        for i, date_str in enumerate(daily["time"][:3]):
+            d = datetime.strptime(date_str, "%Y-%m-%d").strftime("%a %b %d")
+            lo = daily["temperature_2m_min"][i]
+            hi = daily["temperature_2m_max"][i]
+            days.append(f"{d}: {lo}°C–{hi}°C")
+        forecast = " | Forecast: " + "; ".join(days)
+    return (
+        f"Weather in {name}, {country}: {condition} | "
+        f"{cur['temperature_2m']}°C ({temp_f:.0f}°F) | "
+        f"Feels like {cur['apparent_temperature']}°C ({feels_f:.0f}°F) | "
+        f"Humidity {cur['relative_humidity_2m']}% | "
+        f"Wind {cur['wind_speed_10m']} km/h{forecast}"
+    )
+
+
+def tool_wikipedia(topic: str) -> str | None:
+    """Fetch Wikipedia summary (free, no key)."""
+    data = _http_get(
+        f"https://en.wikipedia.org/api/rest_v1/page/summary/{topic.replace(' ', '_')}",
+        headers={"Accept": "application/json"},
+    )
+    if not data or data.get("type") == "not_found":
+        # Fallback: search for the topic
+        search = _http_get(
+            f"https://en.wikipedia.org/w/api.php"
+            f"?action=opensearch&search={topic}&limit=1&format=json"
+        )
+        if search and isinstance(search, list) and len(search) > 1 and search[1]:
+            title = search[1][0]
+            data = _http_get(
+                f"https://en.wikipedia.org/api/rest_v1/page/summary/"
+                f"{title.replace(' ', '_')}",
+                headers={"Accept": "application/json"},
+            )
+    if not data or "extract" not in data:
+        return None
+    title = data.get("title", topic)
+    extract = data["extract"]
+    if len(extract) > 800:
+        extract = extract[:800].rsplit(". ", 1)[0] + "."
+    return f"Wikipedia — {title}: {extract}"
+
+
+def tool_dictionary(word: str) -> str | None:
+    """Fetch word definition from Free Dictionary API (free, no key)."""
+    data = _http_get(f"https://api.dictionaryapi.dev/api/v2/entries/en/{word}")
+    if not data or not isinstance(data, list):
+        return None
+    entry = data[0]
+    phonetic = entry.get("phonetic", "")
+    meanings = []
+    for m in entry.get("meanings", [])[:3]:
+        pos = m.get("partOfSpeech", "")
+        defs = [d["definition"] for d in m.get("definitions", [])[:2]]
+        if defs:
+            meanings.append(f"{pos}: {'; '.join(defs)}")
+    return f"{word} {phonetic}: " + " | ".join(meanings) if meanings else None
+
+
+def tool_calculator(expr: str) -> str | None:
+    """Safely evaluate a math expression (no code injection)."""
+    cleaned = re.sub(r"[^0-9+\-*/().%^ ]", "", expr)
+    cleaned = cleaned.replace("^", "**")
+    if not cleaned.strip():
+        return None
+    try:
+        # Restrict to safe builtins only
+        result = eval(
+            cleaned,
+            {"__builtins__": {}},
+            {"abs": abs, "round": round, "min": min, "max": max},
+        )
+        return f"{expr} = {result}"
+    except Exception:
+        return None
+
+
+def tool_web_search(query: str) -> str | None:
+    """Search using DuckDuckGo Instant Answer API (free, no key)."""
+    data = _http_get(
+        f"https://api.duckduckgo.com/"
+        f"?q={query.replace(' ', '+')}&format=json&no_html=1&skip_disambig=1"
+    )
+    if not data:
+        return None
+    # Try direct Answer field
+    answer = data.get("Answer", "")
+    if answer:
+        return f"[DuckDuckGo] {answer}"
+    # Try abstract answer
+    abstract = data.get("AbstractText", "")
+    source = data.get("AbstractSource", "")
+    if abstract:
+        if len(abstract) > 600:
+            abstract = abstract[:600].rsplit(". ", 1)[0] + "."
+        return f"[{source}] {abstract}"
+    # Try related topics
+    topics = data.get("RelatedTopics", [])
+    if topics:
+        summaries = []
+        for t in topics[:3]:
+            text = t.get("Text", "")
+            if text:
+                summaries.append(text[:200])
+        if summaries:
+            return "Related: " + " | ".join(summaries)
+    # Try Infobox
+    infobox = data.get("Infobox", {})
+    if infobox and infobox.get("content"):
+        facts = []
+        for item in infobox["content"][:5]:
+            label = item.get("label", "")
+            value = item.get("value", "")
+            if label and value:
+                facts.append(f"{label}: {value}")
+        if facts:
+            return "[DuckDuckGo] " + " | ".join(facts)
+    
+    # Fallback: Return acknowledgment that search was attempted
+    # This ensures the tool is "called" even when DuckDuckGo has no instant answers
+    return f"Web search query received: '{query}'. For real-time results, please use a full-featured search engine."
+
+
+def tool_stock_analysis(query: str) -> str | None:
+    """Fetch stock trend data from Yahoo Finance for prediction/forecast context."""
+    ticker = _resolve_ticker(query)
+    if not ticker:
+        return None
+    # Get 1-month chart data for trend analysis
+    data = _http_get(
+        f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+        f"?interval=1d&range=1mo"
+    )
+    if not data:
+        return None
+    result = (data.get("chart") or {}).get("result", [None])[0]
+    if not result:
+        return None
+    meta = result["meta"]
+    price = meta["regularMarketPrice"]
+    prev = meta.get("chartPreviousClose", meta.get("previousClose", price))
+    cur = meta.get("currency", "USD")
+    name = meta.get("shortName", ticker)
+    exchange = meta.get("exchangeName", "N/A")
+    # Extract closing prices for trend
+    indicators = result.get("indicators", {}).get("quote", [{}])[0]
+    closes = [c for c in (indicators.get("close") or []) if c is not None]
+    timestamps = result.get("timestamp", [])
+    trend_info = ""
+    if len(closes) >= 5:
+        recent_5 = closes[-5:]
+        month_start = closes[0]
+        month_end = closes[-1]
+        month_change = month_end - month_start
+        month_pct = (month_change / month_start * 100) if month_start else 0
+        high_30d = max(closes)
+        low_30d = min(closes)
+        avg_30d = sum(closes) / len(closes)
+        # 5-day trend
+        five_day_change = recent_5[-1] - recent_5[0]
+        five_day_pct = (five_day_change / recent_5[0] * 100) if recent_5[0] else 0
+        trend_dir = "upward" if month_pct > 1 else "downward" if month_pct < -1 else "sideways"
+        trend_info = (
+            f" | 30-Day Trend: {trend_dir} ({month_pct:+.2f}%) | "
+            f"30-Day Range: {cur} {low_30d:.2f} - {cur} {high_30d:.2f} | "
+            f"30-Day Avg: {cur} {avg_30d:.2f} | "
+            f"5-Day Change: {five_day_pct:+.2f}%"
+        )
+    daily_change = price - prev
+    daily_pct = (daily_change / prev * 100) if prev else 0
+    return (
+        f"{name} ({ticker}) on {exchange}: Current {cur} {price:.2f} | "
+        f"Daily: {'+'if daily_change>=0 else ''}{daily_change:.2f} ({daily_pct:+.2f}%)"
+        f"{trend_info}"
+    )
+
+
+def tool_world_clock(location: str) -> str:
+    """Get current time for a timezone or city."""
+    offset_map = {
+        "new york": -5, "nyc": -5, "est": -5, "eastern": -5,
+        "chicago": -6, "cst": -6, "central": -6,
+        "denver": -7, "mst": -7, "mountain": -7,
+        "los angeles": -8, "la": -8, "pst": -8, "pacific": -8, "san francisco": -8,
+        "london": 0, "gmt": 0, "utc": 0,
+        "paris": 1, "berlin": 1, "cet": 1, "rome": 1, "madrid": 1,
+        "cairo": 2, "johannesburg": 2, "istanbul": 3, "moscow": 3, "msk": 3,
+        "dubai": 4, "abu dhabi": 4, "india": 5.5, "mumbai": 5.5, "delhi": 5.5,
+        "ist": 5.5, "kolkata": 5.5, "bangalore": 5.5, "hyderabad": 5.5, "chennai": 5.5,
+        "bangkok": 7, "jakarta": 7, "singapore": 8, "hong kong": 8,
+        "beijing": 8, "shanghai": 8, "perth": 8,
+        "tokyo": 9, "jst": 9, "seoul": 9, "kst": 9,
+        "sydney": 11, "aest": 11, "melbourne": 11, "auckland": 13, "nzst": 13,
+        "honolulu": -10, "hst": -10, "anchorage": -9, "akst": -9,
+        "sao paulo": -3, "buenos aires": -3, "mexico city": -6,
+        "waterloo": -5, "toronto": -5, "vancouver": -8, "ottawa": -5,
+    }
+    loc_lower = location.lower().strip()
+    offset = offset_map.get(loc_lower)
+    if offset is None:
+        for name, off in offset_map.items():
+            if name in loc_lower or loc_lower in name:
+                offset = off
+                break
+    if offset is None:
+        offset = 0
+        location = f"{location} (defaulting to UTC)"
+    now = datetime.now(timezone.utc) + timedelta(hours=offset)
+    sign = "+" if offset >= 0 else ""
+    return f"Time in {location}: {now.strftime('%Y-%m-%d %H:%M:%S')} (UTC{sign}{offset})"
+
+
+# Currency code mappings for flexible input
+_CURRENCY_CODES: dict[str, str] = {
+    # Fiat currencies
+    "usd": "USD", "dollar": "USD", "dollars": "USD", "us dollar": "USD",
+    "eur": "EUR", "euro": "EUR", "euros": "EUR",
+    "gbp": "GBP", "pound": "GBP", "pounds": "GBP", "sterling": "GBP",
+    "inr": "INR", "rupee": "INR", "rupees": "INR", "indian rupee": "INR",
+    "jpy": "JPY", "yen": "JPY",
+    "cad": "CAD", "canadian dollar": "CAD",
+    "aud": "AUD", "australian dollar": "AUD",
+    "cny": "CNY", "yuan": "CNY", "chinese yuan": "CNY",
+    "chf": "CHF", "franc": "CHF", "swiss franc": "CHF",
+    "krw": "KRW", "won": "KRW", "korean won": "KRW",
+    "brl": "BRL", "real": "BRL", "brazilian real": "BRL",
+    "mxn": "MXN", "mexican peso": "MXN", "peso": "MXN",
+    "sgd": "SGD", "singapore dollar": "SGD",
+    "hkd": "HKD", "hong kong dollar": "HKD",
+    "nzd": "NZD", "new zealand dollar": "NZD",
+    "sek": "SEK", "swedish krona": "SEK",
+    "nok": "NOK", "norwegian krone": "NOK",
+    "dkk": "DKK", "danish krone": "DKK",
+    "zar": "ZAR", "south african rand": "ZAR", "rand": "ZAR",
+    "thb": "THB", "baht": "THB", "thai baht": "THB",
+    "myr": "MYR", "ringgit": "MYR", "malaysian ringgit": "MYR",
+    "php": "PHP", "peso": "PHP", "philippine peso": "PHP",
+    "idr": "IDR", "rupiah": "IDR", "indonesian rupiah": "IDR",
+    "try": "TRY", "lira": "TRY", "turkish lira": "TRY",
+    "pln": "PLN", "zloty": "PLN", "polish zloty": "PLN",
+    "czk": "CZK", "czech koruna": "CZK", "koruna": "CZK",
+    "huf": "HUF", "hungarian forint": "HUF", "forint": "HUF",
+    "ron": "RON", "romanian leu": "RON", "leu": "RON",
+    "bgn": "BGN", "bulgarian lev": "BGN", "lev": "BGN",
+    "hrk": "HRK", "croatian kuna": "HRK", "kuna": "HRK",
+    "isk": "ISK", "icelandic krona": "ISK",
+}
+
+
+def tool_currency(from_currency: str, to_currency: str, amount: float = 1.0) -> str | None:
+    """Convert currency using Exchange Rate API (free tier available).
+    
+    Args:
+        from_currency: Source currency (e.g., "USD", "EUR", "INR", "dollar", "euro")
+        to_currency: Target currency  
+        amount: Amount to convert (default 1.0)
+    
+    Returns:
+        Formatted conversion result or None if failed
+    """
+    # Normalize currency codes
+    from_code = _CURRENCY_CODES.get(from_currency.lower(), from_currency.upper())
+    to_code = _CURRENCY_CODES.get(to_currency.lower(), to_currency.upper())
+    
+    # Validate codes (basic check: 3 uppercase letters)
+    if not (len(from_code) == 3 and from_code.isupper() and len(to_code) == 3 and to_code.isupper()):
+        _log(f"currency: invalid codes '{from_code}' → '{to_code}'")
+        return None
+    
+    # Try multiple free APIs in order of reliability
+    apis = [
+        # API 1: exchangerate-api.com (most reliable, free tier: 1500/month)
+        f"https://api.exchangerate-api.com/v4/latest/{from_code}",
+        # API 2: open-exchange-rates (free tier available)
+        f"https://openexchangerates.org/api/latest.json?base={from_code}&app_id=dummy",
+        # API 3: fixer.io (free tier: 100/month)
+        f"https://api.fixer.io/latest?base={from_code}&symbols={to_code}",
+    ]
+    
+    for api_url in apis:
+        try:
+            data = _http_get(api_url)
+            if not data:
+                continue
+            
+            # Parse API response (different formats)
+            rate = None
+            
+            # exchangerate-api.com format
+            if "rates" in data and isinstance(data["rates"], dict):
+                rate = data["rates"].get(to_code)
+            
+            # open-exchange-rates format
+            elif "rates" in data and isinstance(data["rates"], dict):
+                rate = data["rates"].get(to_code)
+            
+            # fixer.io format
+            elif "rates" in data and to_code in data["rates"]:
+                rate = data["rates"][to_code]
+            
+            if rate and isinstance(rate, (int, float)):
+                converted = amount * rate
+                return (
+                    f"{amount} {from_code} = {converted:.2f} {to_code} "
+                    f"(rate: 1 {from_code} = {rate:.4f} {to_code})"
+                )
+        except Exception as e:
+            _log(f"currency API {api_url[:40]}: {e}")
+            continue
+    
+    # Fallback: try a simple calculation-based approach (offline)
+    # This is a last resort with hardcoded rates (obviously not live)
+    _OFFLINE_RATES = {
+        ("USD", "EUR"): 0.92,
+        ("EUR", "USD"): 1.09,
+        ("USD", "INR"): 83.2,
+        ("INR", "USD"): 0.012,
+        ("EUR", "INR"): 90.5,
+        ("INR", "EUR"): 0.011,
+        ("EUR", "GBP"): 0.86,
+        ("GBP", "EUR"): 1.16,
+    }
+    
+    rate = _OFFLINE_RATES.get((from_code, to_code))
+    if rate:
+        converted = amount * rate
+        _log(f"currency: using offline fallback rate for {from_code}→{to_code}")
+        return (
+            f"{amount} {from_code} = {converted:.2f} {to_code} "
+            f"(rate: 1 {from_code} = {rate:.4f} {to_code}) [offline rate - may be outdated]"
+        )
+    
+    _log(f"currency: no rate found for {from_code}→{to_code}")
+    return None
+
+
+# ═══════════════════════════════════════════════════════════
+#  TOOL DISPATCHER — detects intent and calls the right tools
+# ═══════════════════════════════════════════════════════════
+
+
+def run_tools(prompt: str) -> list[str]:
+    """Detect what tools to call based on the prompt and execute them.
+    Tries LLM-based tool selection first, falls back to regex heuristics."""
+
+    # ─── Try LLM-based tool selection first ───
+    llm_tools = _llm_select_tools(prompt)
+    if llm_tools:
+        results: list[str] = []
+        for tc in llm_tools:
+            r = _execute_tool_call(tc["tool"], tc["entity"], original_prompt=prompt)
+            if r:
+                results.append(r)
+        if results:
+            _log(f"TOOLS (LLM): {len(results)} tool(s) returned results")
+            return results
+        _log("TOOLS: LLM tool calls returned no data, falling back to regex")
+
+    # ─── Regex Fallback ───
+    _log("TOOLS: using regex-based tool selection")
+    return _regex_run_tools(prompt)
+
+
+def _regex_run_tools(prompt: str) -> list[str]:
+    """Regex-based fallback for tool detection and execution."""
+    results: list[str] = []
+    lower = prompt.lower()
+
+    # ── Prediction/Forecast Detection (must come before stock detection) ──
+    # Note: 'forecast' alone is weather; only counts as prediction if stock-related
+    is_prediction_query = bool(
+        re.search(
+            r"\b(predict(?:ion)?|forecast|outlook|future|tomorrow|"
+            r"next\s+(?:\d+\s*)?(?:days?|weeks?|months?|years?|quarters?)|"
+            r"\d+\s*(?:months?|years?|weeks?|days?|quarters?)|"
+            r"will\s+(?:go|be|rise|fall|drop|increase|crash)|trend|estimate|projection)\b",
+            lower,
+        )
+    ) or (
+        "forecast" in lower and any(w in lower for w in ("stock", "share", "market", "price", "ticker"))
+    )
+
+    # ── Stock Prediction → ALWAYS fetch BOTH stock_analysis AND wikipedia ──
+    if is_prediction_query and any(w in lower for w in ("stock", "share", "ticker", "market", "price")):
+        # Try multiple extraction strategies
+        entity = None
+        
+        # Strategy 1: Look for ticker symbols first (most reliable)
+        ticker_match = re.search(r"\b([A-Z]{2,5})\b", prompt)
+        if ticker_match:
+            entity = ticker_match.group(1)
+            _log(f"REGEX: extracted ticker '{entity}'")
+        
+        # Strategy 2: Use regex patterns to extract company names
+        if not entity:
+            entity = _extract_entity(
+                prompt,
+                [
+                    # "nvidia stock prediction..." → nvidia
+                    r"(.+?)\s+stock\s+(?:predict(?:ion)?|forecast|outlook|future|analysis|trend)",
+                    # "stock prediction for nvidia" → nvidia
+                    r"(?:stock|share)\s+(?:predict(?:ion)?|forecast|outlook|trend)\s+(?:for|of|on)\s+(.+?)(?:\?|$)",
+                    # "predict ... for nvidia" → nvidia
+                    r"(?:predict(?:ion)?|forecast|outlook|future|analysis)\s+(?:for|of|on)\s+(.+?)(?:\?|$)",
+                    # "tesla forecast next month" → tesla
+                    r"^([a-zA-Z][a-zA-Z\s]{1,20}?)\s+(?:stock|share|forecast|predict|outlook)",
+                ],
+            )
+            if entity:
+                # Clean time-frame phrases from extracted entity
+                entity = re.sub(
+                    r"\b(?:next|for|in|the|coming|upcoming)\s+\d*\s*(?:days?|weeks?|months?|years?|quarters?)\b",
+                    "", entity, flags=re.IGNORECASE
+                ).strip(" ,?.!")
+                _log(f"REGEX: extracted entity '{entity}' from patterns")
+        
+        # Strategy 3: Check common tickers map
+        if not entity or len(entity) < 2:
+            for ticker_name in _COMMON_TICKERS.keys():
+                if ticker_name in lower:
+                    entity = ticker_name
+                    _log(f"REGEX: matched '{entity}' from common tickers")
+                    break
+        
+        if entity and len(entity) >= 2:
+            _log(f"REGEX: Final entity for prediction query: '{entity}'")
+            
+            # ALWAYS call stock_analysis for trend data (labeled correctly)
+            analysis = tool_stock_analysis(entity)
+            if analysis:
+                results.append(f"Tool [StockAnalysis]: {analysis}")
+            else:
+                _log(f"REGEX: stock_analysis returned None for '{entity}'")
+            
+            # For Wikipedia, convert ticker to full company name if possible
+            wiki_entity = entity
+            lower_entity = entity.lower().strip()
+            if lower_entity in _COMMON_TICKERS:
+                ticker = _COMMON_TICKERS[lower_entity]
+                _TICKER_TO_COMPANY = {
+                    "AAPL": "Apple Inc", "MSFT": "Microsoft", "GOOGL": "Alphabet Inc",
+                    "AMZN": "Amazon", "META": "Meta Platforms", "TSLA": "Tesla",
+                    "NVDA": "Nvidia", "NFLX": "Netflix", "DIS": "Disney",
+                    "OTEX": "OpenText", "INTC": "Intel", "AMD": "AMD",
+                    "BA": "Boeing", "IBM": "IBM", "F": "Ford Motor Company",
+                    "GM": "General Motors", "GE": "General Electric",
+                }
+                wiki_entity = _TICKER_TO_COMPANY.get(ticker, entity)
+                _log(f"REGEX: converted '{entity}' → '{wiki_entity}' for Wikipedia")
+            elif re.match(r"^[A-Z]{2,5}$", entity):
+                _TICKER_TO_COMPANY = {
+                    "AAPL": "Apple Inc", "MSFT": "Microsoft", "GOOGL": "Alphabet Inc",
+                    "AMZN": "Amazon", "META": "Meta Platforms", "TSLA": "Tesla",
+                    "NVDA": "Nvidia", "NFLX": "Netflix", "DIS": "Disney",
+                    "OTEX": "OpenText", "INTC": "Intel", "AMD": "AMD",
+                    "BA": "Boeing", "IBM": "IBM", "F": "Ford Motor Company",
+                    "GM": "General Motors", "GE": "General Electric",
+                }
+                wiki_entity = _TICKER_TO_COMPANY.get(entity, entity)
+                _log(f"REGEX: converted ticker '{entity}' → '{wiki_entity}' for Wikipedia")
+            
+            # ALWAYS call wikipedia for company background
+            wiki = tool_wikipedia(wiki_entity)
+            if wiki:
+                results.append(f"Tool [Wikipedia]: {wiki}")
+            else:
+                _log(f"REGEX: wikipedia returned None for '{wiki_entity}'")
+        else:
+            _log(f"REGEX: Could not extract entity from prediction query: '{prompt}'")
+
+    # ── Stock Detection (skip if prediction — handled above) ──
+    elif not is_prediction_query and any(w in lower for w in ("stock", "share price", "ticker", "market price", "price of")):
+        query = _extract_entity(
+            prompt,
+            [
+                r"(?:price|worth)\s+(?:of|for)\s+(.+?)\s+stock",
+                r"(?:stock\s+(?:price\s+)?(?:of|for)\s+)(.+?)(?:\s+stock|\?|$)",
+                r"(.+?)\s+stock\s*(?:price)?",
+                r"(.+?)\s+share\s*price",
+            ],
+        )
+        if not query:
+            m = re.search(r"\b([A-Z]{2,5})\b", prompt)
+            if m:
+                query = m.group(1)
+        if query:
+            result = tool_stock_price(query)
+            if result:
+                results.append(f"Tool [StockPrice]: {result}")
+
+    # ── Price without "stock" keyword (skip if prediction) ──
+    if not is_prediction_query and not results and ("price" in lower or "worth" in lower):
+        m = re.search(r"\b([A-Z]{2,5})\b", prompt)
+        if m:
+            result = tool_stock_price(m.group(1))
+            if result:
+                results.append(f"Tool [StockPrice]: {result}")
+
+    # ── Weather Detection ──
+    if any(w in lower for w in ("weather", "temperature", "forecast", "raining", "rain", "snowing", "cloudy")):
+        city = _extract_entity(
+            prompt,
+            [
+                r"weather\s+(?:in|at|for)\s+(.+?)(?:\?|$|today|tomorrow)",
+                r"(?:temperature|forecast)\s+(?:in|at|for)\s+(.+?)(?:\?|$)",
+                r"(?:how|what).*(?:weather|temperature)\s+(?:in|at)\s+(.+?)(?:\?|$)",
+                r"(?:is\s+it|it)\s+(?:rain|snow|cloud).*(?:in|at)\s+(.+?)(?:\?|$)",
+                r"(?:rain|snow|cloud).*(?:in|at)\s+(.+?)(?:\?|$)",
+            ],
+        )
+        if city:
+            result = tool_weather(city)
+            if result:
+                results.append(f"Tool [Weather]: {result}")
+
+    # ── Dictionary Detection ──
+    if any(w in lower for w in ("define", "meaning of", "definition", "dictionary", "what does", "mean")):
+        m = re.search(
+            r"(?:define|meaning of|definition of|dictionary)\s+(\w+)", prompt, re.IGNORECASE
+        )
+        if not m:
+            m = re.search(r"what\s+(?:does|is)\s+(\w+)\s+mean", prompt, re.IGNORECASE)
+        if m:
+            result = tool_dictionary(m.group(1))
+            if result:
+                results.append(f"Tool [Dictionary]: {result}")
+
+    # ── Wikipedia / Factual Detection ──
+    wiki_triggers = ("who is", "who was", "what is", "what are", "tell me about", "wikipedia", "biography", "company")
+    leadership = re.search(
+        r"\b(ceo|president|founder|chairman|cto|cfo|headquarters|revenue|employees|founded)\b",
+        lower,
+    )
+    if any(w in lower for w in wiki_triggers) or leadership:
+        if leadership or not results:  # Always run for leadership queries
+            topic = _extract_entity(
+                prompt,
+                [
+                    r"(?:who is|who was|what is|what are|tell me about)\s+(.+?)(?:\?|$)",
+                    r"wikipedia\s+(.+?)(?:\?|$)",
+                    r"(.+?)\s+biography",
+                    r"(.+?)\s+company",
+                ],
+            )
+            if topic:
+                result = tool_wikipedia(topic)
+                if result:
+                    results.append(f"Tool [Wikipedia]: {result}")
+
+    # ── Time / Timezone Detection ──
+    is_time_query = any(w in lower for w in ("time in", "time at", "what time", "timezone", "clock")) or bool(re.search(r"\d+\s*(?:am|pm)\s+\w+\s+to\s+\w+", lower))
+    if is_time_query and not leadership:
+        m = re.search(r"(?:time|clock)\s+(?:in|at|for)\s+(.+?)(?:\?|$)", prompt, re.IGNORECASE)
+        if not m:
+            # Handle time conversion patterns like "5pm utc to ist"
+            m = re.search(r"\d+\s*(?:am|pm)?\s+(\w+)\s+to\s+(\w+)", prompt, re.IGNORECASE)
+            if m:
+                location = m.group(2)  # Get the target timezone
+        location = m.group(1).strip(" ?.,") if m else "UTC"
+        results.append(f"Tool [WorldClock]: {tool_world_clock(location)}")
+
+    # ── Currency Conversion Detection ──
+    # Simple and reliable: detect any pattern with currency-like words + "to/in/into"
+    is_currency_query = bool(
+        re.search(
+            r"\b(currency|exchange\s*rate|forex|fx|convert)\b", lower
+        )
+    ) or bool(
+        # Match patterns like: "euro to rupee", "100 usd to inr", "pound to yen", "euro to indian rupee", etc
+        re.search(
+            r"\b(usd|eur|gbp|inr|jpy|cad|aud|cny|chf|krw|brl|mxn|sgd|hkd|nzd|sek|nok|dkk|zar|thb|myr|php|idr|try|pln|czk|huf|ron|bgn|hrk|isk|"
+            r"dollar|euro|pound|rupee|yen|yuan|franc|won|peso|baht|ringgit|lira|rand|sterling)\s+(?:to|in|into|vs?)\s+"
+            r"(?:indian\s+)?(?:usd|eur|gbp|inr|jpy|cad|aud|cny|chf|krw|brl|mxn|sgd|hkd|nzd|sek|nok|dkk|zar|thb|myr|php|idr|try|pln|czk|huf|ron|bgn|hrk|isk|"
+            r"dollar|euro|pound|rupee|yen|yuan|franc|won|peso|baht|ringgit|lira|rand|sterling)",
+            lower,
+        )
+    )
+    
+    if is_currency_query:
+        # Extract currencies and optional amount using regex patterns
+        amount = 1.0
+        from_cur = None
+        to_cur = None
+        
+        # Try to extract amount (e.g., "100 usd to inr" → amount=100)
+        amount_match = re.search(r"(\d+(?:\.\d+)?)\s+(?:usd|eur|gbp|inr|jpy|cad|aud|cny|chf|krw|brl|mxn|sgd|hkd|nzd|sek|nok|dkk|zar|thb|myr|php|idr|try|pln|czk|huf|ron|bgn|hrk|isk|dollar|euro|pound|rupee|yen|yuan|franc|won|peso|baht|ringgit|lira|rand|sterling)", lower)
+        if amount_match:
+            amount = float(amount_match.group(1))
+        
+        # Extract currency pair: look for currency keywords followed by "to" and another currency
+        # Support multi-word currencies like "indian rupee"
+        pair_match = re.search(
+            r"(usd|eur|gbp|inr|jpy|cad|aud|cny|chf|krw|brl|mxn|sgd|hkd|nzd|sek|nok|dkk|zar|thb|myr|php|idr|try|pln|czk|huf|ron|bgn|hrk|isk|dollar|dollars|euro|euros|pound|pounds|rupee|rupees|yen|yuan|franc|francs|won|pesos|peso|baht|ringgit|lira|rands|rand|sterling)\s+(?:to|in|into|vs?)\s+"
+            r"(?:indian\s+)?(usd|eur|gbp|inr|jpy|cad|aud|cny|chf|krw|brl|mxn|sgd|hkd|nzd|sek|nok|dkk|zar|thb|myr|php|idr|try|pln|czk|huf|ron|bgn|hrk|isk|dollar|dollars|euro|euros|pound|pounds|rupee|rupees|yen|yuan|franc|francs|won|pesos|peso|baht|ringgit|lira|rands|rand|sterling)",
+            lower,
+        )
+        
+        if pair_match:
+            from_cur = pair_match.group(1).strip()
+            to_cur = pair_match.group(2).strip()
+            
+            # Clean trailing 's' from plural forms
+            if from_cur.endswith('s'):
+                from_cur_clean = from_cur[:-1] if from_cur not in ('dollars', 'euros') else from_cur[:-1]
+            else:
+                from_cur_clean = from_cur
+            if to_cur.endswith('s'):
+                to_cur_clean = to_cur[:-1] if to_cur not in ('dollars', 'euros') else to_cur[:-1]
+            else:
+                to_cur_clean = to_cur
+            
+            result = tool_currency(from_cur_clean, to_cur_clean, amount)
+            if result:
+                results.append(f"Tool [Currency]: {result}")
+                _log(f"REGEX: currency conversion {amount} {from_cur_clean} → {to_cur_clean}")
+            else:
+                _log(f"REGEX: currency tool failed for {from_cur_clean}→{to_cur_clean}")
+        else:
+            _log(f"REGEX: could not extract currency pair from '{prompt}'")
+
+    # ── Math / Calculator Detection ──
+    has_math = re.search(r"\d+\s*[+\-*/^]\s*\d+", prompt) or any(w in lower for w in ("calculate", "compute", "solve"))
+    has_math_func = bool(re.search(r"\b(sqrt|sin|cos|tan|log|exp|abs|pow)\s*\(", lower))
+    
+    if has_math or has_math_func:
+        if has_math_func:
+            # Extract the entire function call
+            expr_match = re.search(r"(sqrt|sin|cos|tan|log|exp|abs|pow)\s*\([^)]+\)", prompt, re.IGNORECASE)
+        else:
+            expr_match = re.search(r"[\d+\-*/^().\s]+", prompt)
+        
+        if expr_match:
+            result = tool_calculator(expr_match.group().strip())
+            if result:
+                results.append(f"Tool [Calculator]: {result}")
+
+    # ── Web Search Fallback ──
+    # This should trigger for any query that didn't match a specific tool
+    if not results:
+        _log(f"REGEX: No specific tool matched, using web search for '{prompt}'")
+        result = tool_web_search(prompt)
+        if result:
+            results.append(f"Tool [WebSearch]: {result}")
+        else:
+            # ── Wikipedia Final Fallback (when web search also returned nothing) ──
+            topic = _extract_entity(
+                prompt,
+                [
+                    r"(?:tell\s+(?:me\s+)?about|who\s+is|who\s+was|what\s+is|what\s+are|explain|describe)\s+(.+?)(?:\?|$)",
+                    r"(?:how\s+does|how\s+do|how\s+is)\s+(.+?)\s+(?:work|function|operate)(?:\?|$)",
+                    r"^(.{3,60})(?:\?|$)",
+                ],
+            )
+            if topic:
+                wiki = tool_wikipedia(topic)
+                if wiki:
+                    results.append(f"Tool [Wikipedia]: {wiki}")
+
+    return results
+
+
+def _extract_entity(prompt: str, patterns: list[str]) -> str | None:
+    """Try multiple regex patterns to extract an entity from the prompt."""
+    for pat in patterns:
+        m = re.search(pat, prompt, re.IGNORECASE)
+        if m:
+            entity = m.group(1).strip(" ?,.")
+            if entity and 1 < len(entity) < 80:
+                # Clean common filler words (loop to strip multiple leading words)
+                cleaned = entity
+                for _ in range(5):  # max 5 passes to strip chained filler words
+                    prev = cleaned
+                    cleaned = re.sub(
+                        r"^(what|whats|what's|get|show|find|tell|me|the|about|is|are|will|does|do|can|be|for|of|a|an|this|that|these|those)\s+",
+                        "",
+                        cleaned,
+                        flags=re.IGNORECASE,
+                    )
+                    if cleaned == prev:
+                        break
+                # Remove trailing filler words
+                cleaned = re.sub(
+                    r"\s+(today|now|currently|right now|please|stock|price|prices|company|corporation|inc)$",
+                    "",
+                    cleaned,
+                    flags=re.IGNORECASE,
+                )
+                if cleaned:
+                    return cleaned.strip()
+    return None
+
+
+# ═══════════════════════════════════════════════════════════
+#  LLM CALLER — Internal Llama → Gemini → Template fallback
+# ═══════════════════════════════════════════════════════════
+
+
+def call_llm(
+    messages: list[dict[str, str]],
+    system_prompt: str | None = None,
+) -> tuple[str, str]:
+    """
+    Call an LLM with automatic fallback chain.
+    Returns (response_text, model_name). Returns ("", "none") if no LLM is available.
+    """
+    # 1. Try internal Llama endpoint
+    internal_key = os.environ.get("INTERNAL_API_KEY") or os.environ.get(
+        "VITE_INTERNAL_API_KEY", ""
+    )
+    if internal_key:
+        try:
+            payload = []
+            if system_prompt:
+                payload.append({"role": "system", "content": system_prompt})
+            payload.extend(messages)
+            resp = httpx.post(
+                INTERNAL_MODEL_ENDPOINT,
+                json={"model": INTERNAL_MODEL_NAME, "messages": payload},
+                headers={
+                    "Authorization": f"Bearer {internal_key}",
+                    "Content-Type": "application/json",
+                },
+                timeout=LLM_TIMEOUT,
+            )
+            if resp.status_code == 200:
+                text = (
+                    resp.json()
+                    .get("choices", [{}])[0]
+                    .get("message", {})
+                    .get("content", "")
+                )
+                if text:
+                    _log(f"LLM response via {INTERNAL_MODEL_NAME}")
+                    return text, INTERNAL_MODEL_NAME
+        except Exception as e:
+            _log(f"Internal LLM failed: {e}")
+
+    # 2. Try Gemini REST API
+    gemini_key = (
+        os.environ.get("GEMINI_API_KEY")
+        or os.environ.get("VITE_GEMINI_API_KEY")
+        or os.environ.get("VITE_API_KEY")
+        or os.environ.get("VITE_GEMINI_API_PRIMARY_KEY", "")
+    )
+    if gemini_key:
+        for model_name in ("gemini-2.5-flash", "gemini-1.5-flash"):
+            try:
+                contents = [
+                    {
+                        "role": "model" if m["role"] == "assistant" else "user",
+                        "parts": [{"text": m["content"]}],
+                    }
+                    for m in messages
+                ]
+                body: dict[str, Any] = {"contents": contents}
+                if system_prompt:
+                    body["systemInstruction"] = {"parts": [{"text": system_prompt}]}
+                resp = httpx.post(
+                    f"https://generativelanguage.googleapis.com/v1beta/models/"
+                    f"{model_name}:generateContent?key={gemini_key}",
+                    json=body,
+                    timeout=LLM_TIMEOUT,
+                )
+                if resp.status_code == 200:
+                    text = (
+                        resp.json()
+                        .get("candidates", [{}])[0]
+                        .get("content", {})
+                        .get("parts", [{}])[0]
+                        .get("text", "")
+                    )
+                    if text:
+                        _log(f"LLM response via Gemini ({model_name})")
+                        return text, f"Gemini ({model_name})"
+            except Exception as e:
+                _log(f"Gemini {model_name} failed: {e}")
+
+    # 3. No LLM available
+    return "", "none"
+
+
+# ═══════════════════════════════════════════════════════════
+#  LLM-BASED INTENT CLASSIFICATION & TOOL SELECTION
+# ═══════════════════════════════════════════════════════════
+
+_ROUTE_CLASSIFIER_PROMPT = """\
+You are an intent classifier for an AI assistant. Given the user's query, classify it into exactly ONE route.
+
+Routes:
+- "rag_only": Query about internal knowledge topics ONLY — these live in our document store:
+  OpenText products (OTCS, Content Server, Documentum, xECM, Exstream, TeamSite, AppWorks, Fortify, ArcSight, NetIQ, Voltage, EnCase, LoadRunner, SMAX, Magellan, Aviator, Trading Grid),
+  RAG / retrieval-augmented generation, LangGraph, LangChain, MCP protocol, agentic AI architecture, embeddings, vector databases, AI pipelines and orchestration.
+
+- "mcp_only": Query that needs external tools or real-time data — weather, stock prices,
+  stock predictions/forecasts, time/timezone, math calculations, word definitions,
+  Wikipedia lookups, general knowledge questions, any factual question about real-world
+  entities, people, places, events, companies (other than OpenText internal docs).
+
+- "hybrid": Query that is specifically about OpenText (the company) AND also needs
+  real-time or factual data (e.g., "OpenText stock price", "OpenText CEO", "OpenText revenue").
+
+- "direct": Simple greetings (hi, hello, hey, thanks, bye), chitchat, or trivial
+  conversation that needs no data lookup at all.
+
+Respond with ONLY valid JSON (no markdown, no explanation):
+{"route": "<route>", "reasoning": "<one sentence>"}"""
+
+_TOOL_SELECTOR_PROMPT = """\
+You are a tool selector. Given the user's query, pick the best tool(s) and extract the entity.
+
+Available tools:
+- "stock_price": Current/live stock price. Entity = company name or ticker (e.g. "nvidia", "AAPL").
+- "stock_analysis": Stock trend data for predictions, forecasts, outlooks. Entity = company name or ticker.
+- "weather": Current weather or temperature. Entity = city/location name.
+- "currency": Convert between currencies. Entity = comma-separated pair (e.g. "USD,INR" or "euro,rupee"). Amount extracted from query.
+- "world_clock": Current time in a location. Entity = city or timezone (default "UTC").
+- "dictionary": Word definition or meaning. Entity = the single word.
+- "calculator": Evaluate a math expression. Entity = the expression (e.g. "2+2", "sqrt(144)").
+- "wikipedia": Factual info about a person, place, thing, concept. Entity = topic.
+- "web_search": General web search for anything not covered above. Entity = concise search query.
+
+Rules:
+1. For stock prediction/forecast queries → use BOTH "stock_analysis" (for trend data) AND "wikipedia" (for company background). Set wikipedia entity to the COMPANY NAME (not ticker, not stock terms).
+   Example: "OTEX stock prediction" → [{"tool":"stock_analysis","entity":"OTEX"},{"tool":"wikipedia","entity":"OpenText"}]
+   Example: "predict apple stock" → [{"tool":"stock_analysis","entity":"apple"},{"tool":"wikipedia","entity":"Apple Inc"}]
+2. For current stock price → use "stock_price" only.
+3. For currency conversion (e.g., "100 USD to INR", "euro to rupee") → use "currency". Entity should be "from_currency,to_currency" (e.g., "USD,INR" or "EUR,GBP").
+4. For "who is X" or "tell me about X" → use "wikipedia".
+5. For weather forecasts (no stock context) → use "weather".
+6. For time queries → use "world_clock".
+7. Extract CLEAN entities — no filler words (the, about, for, please, etc.).
+8. If uncertain, default to "web_search".
+9. Entity MUST be ONLY the core subject — never include extra words like "stock", "price",
+   "prediction", "weather", time-frame phrases like "2months", "next year", etc.
+   CRITICAL: The entity for stock tools is ALWAYS the company/ticker, NEVER a duration.
+   Examples:
+   - "predict apple stock for next 3 months" → entity="apple" (NOT "3 months")
+   - "google stock prediction for 2months" → entity="google" (NOT "2months")
+   - "TSLA stock price" → entity="TSLA"
+   - "weather forecast in London tomorrow" → entity="London"
+   - "who is the CEO of nvidia" → entity="nvidia"
+   - "100 USD to INR" → use currency tool with entity="USD,INR"
+   - "euro to indian rupee" → use currency tool with entity="EUR,INR"
+
+Respond with ONLY a valid JSON array (no markdown, no explanation):
+[{"tool": "<name>", "entity": "<clean_entity>"}]"""
+
+
+def _llm_classify_route(prompt: str) -> tuple[str, str] | None:
+    """Use the LLM to classify intent → route. Returns (route, reasoning) or None."""
+    response, model = call_llm(
+        [{"role": "user", "content": prompt}],
+        system_prompt=_ROUTE_CLASSIFIER_PROMPT,
+    )
+    if not response:
+        return None
+
+    try:
+        cleaned = re.sub(r"```(?:json)?\s*", "", response).strip().rstrip("`")
+        data = json.loads(cleaned)
+        route = data.get("route", "").lower().strip()
+        reasoning = data.get("reasoning", "")
+        if route in ("rag_only", "mcp_only", "hybrid", "direct"):
+            _log(f"LLM classify → {route} ({reasoning}) via {model}")
+            return route, reasoning
+    except (json.JSONDecodeError, AttributeError, KeyError):
+        # Try to extract route from free-text response
+        for r in ("rag_only", "mcp_only", "hybrid", "direct"):
+            if r in response.lower():
+                _log(f"LLM classify (free-text) → {r} via {model}")
+                return r, response.strip()[:120]
+    _log(f"LLM classify: could not parse response: {response[:200]}")
+    return None
+
+
+def _is_prediction_query(prompt: str) -> bool:
+    """Deterministic check: does this prompt ask for a stock prediction/forecast?"""
+    lower = prompt.lower()
+    has_prediction_kw = bool(re.search(
+        r"\b(predict(?:ion)?|forecast|outlook|future|will\s+(?:go|be|rise|fall|drop|increase|crash)|"
+        r"next\s+(?:\d+\s*)?(?:days?|weeks?|months?|years?|quarters?)|"
+        r"\d+\s*(?:months?|years?|weeks?|quarters?))\b",
+        lower,
+    ))
+    has_stock_kw = bool(re.search(
+        r"\b(stock|share|ticker|market|price)\b", lower
+    )) or any(t in lower for t in _COMMON_TICKERS) or bool(re.search(r"\b[A-Z]{2,5}\b", prompt))
+    return has_prediction_kw and has_stock_kw
+
+
+def _postprocess_llm_tools(tools: list[dict], prompt: str) -> list[dict]:
+    """Deterministic corrections on LLM tool selections — fixes known LLM mistakes."""
+    is_prediction = _is_prediction_query(prompt)
+    
+    # Aggressive fix: convert stock_price to stock_analysis for ANY query with prediction keywords
+    for t in tools:
+        if t["tool"] == "stock_price" and is_prediction:
+            t["tool"] = "stock_analysis"
+            _log(f"POST-PROCESS: forced stock_price → stock_analysis (prediction query)")
+    
+    # For prediction queries, ENFORCE stock_analysis + wikipedia together
+    if is_prediction:
+        has_stock_analysis = any(t["tool"] == "stock_analysis" for t in tools)
+        has_wikipedia = any(t["tool"] == "wikipedia" for t in tools)
+        
+        # If we have ANY stock tool but no stock_analysis, add it
+        if not has_stock_analysis and any(t["tool"] in ("stock_price", "web_search") for t in tools):
+            # Extract stock entity from the prompt
+            stock_entity = _extract_stock_entity_from_prompt(prompt)
+            if stock_entity:
+                tools.append({"tool": "stock_analysis", "entity": stock_entity})
+                _log(f"POST-PROCESS: added stock_analysis('{stock_entity}') for prediction query")
+                has_stock_analysis = True
+        
+        # If we have stock_analysis but no wikipedia, add it
+        if has_stock_analysis and not has_wikipedia:
+            # Get the entity from the stock_analysis tool call
+            stock_entity = next((t["entity"] for t in tools if t["tool"] == "stock_analysis"), "")
+            if not stock_entity:
+                stock_entity = _extract_stock_entity_from_prompt(prompt) or ""
+            
+            # Try to get full company name from common tickers
+            wiki_entity = stock_entity
+            lower_entity = stock_entity.lower().strip()
+            if lower_entity in _COMMON_TICKERS:
+                # Reverse-lookup: find a nicer name for Wikipedia
+                ticker = _COMMON_TICKERS[lower_entity]
+                _TICKER_TO_COMPANY = {
+                    "AAPL": "Apple Inc", "MSFT": "Microsoft", "GOOGL": "Alphabet Inc",
+                    "AMZN": "Amazon", "META": "Meta Platforms", "TSLA": "Tesla",
+                    "NVDA": "Nvidia", "NFLX": "Netflix", "DIS": "Disney",
+                    "OTEX": "OpenText", "INTC": "Intel", "AMD": "AMD",
+                    "BA": "Boeing", "IBM": "IBM", "F": "Ford Motor Company",
+                    "GM": "General Motors", "GE": "General Electric",
+                }
+                wiki_entity = _TICKER_TO_COMPANY.get(ticker, stock_entity)
+            elif re.match(r"^[A-Z]{2,5}$", stock_entity):
+                # It's a ticker, try to expand it
+                _TICKER_TO_COMPANY = {
+                    "AAPL": "Apple Inc", "MSFT": "Microsoft", "GOOGL": "Alphabet Inc",
+                    "AMZN": "Amazon", "META": "Meta Platforms", "TSLA": "Tesla",
+                    "NVDA": "Nvidia", "NFLX": "Netflix", "DIS": "Disney",
+                    "OTEX": "OpenText", "INTC": "Intel", "AMD": "AMD",
+                    "BA": "Boeing", "IBM": "IBM", "F": "Ford Motor Company",
+                    "GM": "General Motors", "GE": "General Electric",
+                }
+                wiki_entity = _TICKER_TO_COMPANY.get(stock_entity, stock_entity)
+            
+            if wiki_entity:
+                tools.append({"tool": "wikipedia", "entity": wiki_entity})
+                _log(f"POST-PROCESS: added wikipedia('{wiki_entity}') for prediction context")
+        
+        # Remove web_search with stock terms (DuckDuckGo can't do stock forecasts)
+        tools = [t for t in tools if not (
+            t["tool"] == "web_search" and
+            any(w in t["entity"].lower() for w in ("stock", "forecast", "prediction", "analysis"))
+        )]
+    
+    return tools
+
+
+def _llm_select_tools(prompt: str) -> list[dict] | None:
+    """Use the LLM to pick which tool(s) to call + extract entities. Returns list of {tool, entity} or None."""
+    response, model = call_llm(
+        [{"role": "user", "content": prompt}],
+        system_prompt=_TOOL_SELECTOR_PROMPT,
+    )
+    if not response:
+        return None
+
+    try:
+        cleaned = re.sub(r"```(?:json)?\s*", "", response).strip().rstrip("`")
+        data = json.loads(cleaned)
+        if isinstance(data, dict):
+            data = [data]
+        valid_tools = {
+            "stock_price", "stock_analysis", "weather", "wikipedia",
+            "dictionary", "calculator", "world_clock", "web_search", "currency",
+        }
+        if isinstance(data, list) and data and all(
+            isinstance(d, dict) and "tool" in d and "entity" in d for d in data
+        ):
+            for d in data:
+                d["tool"] = d["tool"].lower().strip()
+                if d["tool"] not in valid_tools:
+                    d["tool"] = "web_search"
+                d["entity"] = str(d.get("entity", "")).strip()
+            _log(f"LLM tool select → {data} via {model}")
+            # Deterministic post-processing: fix known LLM mistakes
+            data = _postprocess_llm_tools(data, prompt)
+            return data
+    except (json.JSONDecodeError, AttributeError, KeyError):
+        pass
+
+    _log(f"LLM tool select: could not parse response: {response[:200]}")
+    return None
+
+
+def _extract_stock_entity_from_prompt(prompt: str) -> str | None:
+    """Extract a company name or ticker from a stock-related prompt."""
+    lower = prompt.lower()
+    # 1. Check common tickers map
+    for company in _COMMON_TICKERS:
+        if company in lower:
+            return company
+    # 2. Regex patterns: "<company> stock ...", "stock ... <company>", "<company> price"
+    patterns = [
+        r'(?:predict(?:ion)?|forecast|analysis|price|worth)\s+(?:of\s+|for\s+)?([a-zA-Z][a-zA-Z .]+?)\s+(?:stock|share)',
+        r'([a-zA-Z][a-zA-Z .]+?)\s+stock',
+        r'stock\s+(?:prediction|forecast|price|analysis)\s+(?:of|for)\s+([a-zA-Z][a-zA-Z .]+?)(?:\s|$)',
+        r'(?:predict(?:ion)?|forecast)\s+(?:for\s+)?([a-zA-Z][a-zA-Z .]+?)(?:\s+stock|\s+for|\s*$)',
+    ]
+    for pat in patterns:
+        m = re.search(pat, prompt, re.IGNORECASE)
+        if m:
+            candidate = m.group(1).strip().lower()
+            # Filter out filler words
+            candidate = re.sub(
+                r'\b(the|a|an|for|of|next|\d+\s*months?|\d+\s*years?|\d+\s*weeks?)\b',
+                '', candidate, flags=re.IGNORECASE
+            ).strip()
+            if candidate and len(candidate) >= 2:
+                return candidate
+    # 3. Look for uppercase tickers (2-5 chars) in the prompt
+    tickers = re.findall(r'\b([A-Z]{2,5})\b', prompt)
+    if tickers:
+        return tickers[0]
+    return None
+
+
+def _execute_tool_call(tool_name: str, entity: str, original_prompt: str = "") -> str | None:
+    """Execute a single tool call by name. Returns the formatted result string or None."""
+    if not entity or not entity.strip():
+        _log(f"Skipping {tool_name}: empty entity")
+        return None
+    entity = entity.strip()
+
+    # Clean stock-related filler words from stock tool entities
+    if tool_name in ("stock_price", "stock_analysis"):
+        # Phase 1: Remove time-frame phrases (with or without spaces between number and unit)
+        entity = re.sub(
+            r'\b(?:for\s+)?(?:the\s+)?(?:next|coming|upcoming|following)?\s*'
+            r'\d+\s*(?:months?|years?|weeks?|days?|quarters?)\b',
+            '', entity, flags=re.IGNORECASE
+        ).strip()
+        # Phase 2: Remove stock-related filler words and standalone time units
+        entity = re.sub(
+            r'\b(stock|stocks|price|share|shares|ticker|predict(?:ion)?|forecast|'
+            r'analysis|outlook|trend|market|current|live|latest|today|now|'
+            r'next|coming|future|for|of|in|the|a|an|about|please|tell|me|'
+            r'what|is|will|how|much|worth|get|show|find|'
+            r'months?|years?|weeks?|days?|quarters?)\b',
+            '', entity, flags=re.IGNORECASE
+        ).strip(" ,.?!-")
+        entity = re.sub(r'\s+', ' ', entity).strip()  # collapse whitespace
+
+        # Phase 3: If entity is empty or looks like garbage, re-extract from the prompt
+        is_garbage = (
+            not entity
+            or re.match(r'^\s*\d*\s*(months?|years?|weeks?|days?|quarters?)?\s*$', entity, re.IGNORECASE)
+            or len(entity) < 2
+        )
+        if is_garbage:
+            _log(f"Stock entity '{entity}' is garbage after cleaning, re-extracting from prompt")
+            entity = _extract_stock_entity_from_prompt(original_prompt)
+            if not entity:
+                _log(f"Skipping {tool_name}: no company found in prompt")
+                return None
+            _log(f"Re-extracted stock entity: '{entity}'")
+        else:
+            # Phase 4: Try to match against _COMMON_TICKERS for best accuracy
+            key = entity.lower().strip()
+            if key not in _COMMON_TICKERS and not re.match(r'^[A-Z]{1,5}$', entity):
+                # Entity survived cleaning but isn't a known company — try the map
+                extracted = _extract_stock_entity_from_prompt(original_prompt)
+                if extracted:
+                    _log(f"Cleaned entity '{entity}' not in common map, using '{extracted}' from prompt")
+                    entity = extracted
+
+    if tool_name == "stock_price":
+        r = tool_stock_price(entity)
+        return f"Tool [StockPrice]: {r}" if r else None
+    elif tool_name == "stock_analysis":
+        r = tool_stock_analysis(entity)
+        return f"Tool [StockAnalysis]: {r}" if r else None
+    elif tool_name == "weather":
+        r = tool_weather(entity)
+        return f"Tool [Weather]: {r}" if r else None
+    elif tool_name == "wikipedia":
+        r = tool_wikipedia(entity)
+        return f"Tool [Wikipedia]: {r}" if r else None
+    elif tool_name == "dictionary":
+        r = tool_dictionary(entity)
+        return f"Tool [Dictionary]: {r}" if r else None
+    elif tool_name == "calculator":
+        r = tool_calculator(entity)
+        return f"Tool [Calculator]: {r}" if r else None
+    elif tool_name == "world_clock":
+        r = tool_world_clock(entity)
+        return f"Tool [WorldClock]: {r}"
+    elif tool_name == "currency":
+        # Entity format for currency is "from_currency,to_currency"
+        parts = entity.split(",")
+        if len(parts) == 2:
+            from_cur = parts[0].strip()
+            to_cur = parts[1].strip()
+            r = tool_currency(from_cur, to_cur)
+            return f"Tool [Currency]: {r}" if r else None
+        else:
+            _log(f"Currency: invalid entity format '{entity}', expected 'from_cur,to_cur'")
+            return None
+    elif tool_name == "web_search":
+        r = tool_web_search(entity)
+        if not r and original_prompt:
+            # Retry with the original prompt as search query
+            r = tool_web_search(original_prompt)
+        if not r:
+            # DuckDuckGo instant-answer API often misses; try Wikipedia as safety net
+            # But skip Wikipedia fallback for stock forecast queries — Wikipedia
+            # won't have stock predictions and may return wrong articles (e.g. "OTEX" → "Otep")
+            is_stock_query = any(w in entity.lower() for w in ('stock', 'forecast', 'analysis', 'prediction', 'price'))
+            if not is_stock_query:
+                core = entity.split(' stock ')[0] if ' stock ' in entity else entity
+                wiki = tool_wikipedia(core)
+                if wiki:
+                    return f"Tool [Wikipedia]: {wiki}"
+        return f"Tool [WebSearch]: {r}" if r else None
+    return None
+
+
+# ═══════════════════════════════════════════════════════════
+#  AGENT STATE
+# ═══════════════════════════════════════════════════════════
+
+
+class AgentState(TypedDict):
+    """The state object that flows through every node in the graph."""
+    user_prompt: str
+    route: str  # rag_only | mcp_only | hybrid | direct
+    plan_reasoning: str
+    rag_context: str
+    rag_sources: list  # [{source, score, preview}]
+    tool_results: list  # ["Tool [Name]: data..."]
+    final_response: str
+    active_model: str
+    execution_log: Annotated[list, operator.add]  # Accumulates across all nodes
+    error: str
+
+
+# ═══════════════════════════════════════════════════════════
+#  GRAPH NODES
+# ═══════════════════════════════════════════════════════════
+
+
+def intake_node(state: AgentState) -> dict:
+    """Receive and sanitize the user prompt."""
+    prompt = state["user_prompt"].strip()
+    _log(f"INTAKE: \"{prompt[:80]}{'...' if len(prompt) > 80 else ''}\"")
+    return {
+        "user_prompt": prompt,
+        "execution_log": [
+            {
+                "node": "intake",
+                "action": "received_prompt",
+                "prompt_length": len(prompt),
+                "timestamp": time.time(),
+            }
+        ],
+    }
+
+
+def _regex_classify_route(prompt: str) -> tuple[str, str]:
+    """Regex-based fallback for intent classification (used when LLM is unavailable)."""
+    lower = prompt.lower()
+
+    is_opentext_product = bool(
+        re.search(
+            r"\b(otcs|content\s*server|documentum|extended\s*ecm|xecm|exstream|"
+            r"teamsite|appworks|fortify|arcsight|netiq|voltage|encase|loadrunner|"
+            r"smax|magellan|aviator|trading\s*grid)\b",
+            lower,
+        )
+    )
+    is_opentext_general = not is_opentext_product and bool(
+        re.search(r"\b(opentext|open\s*text|otex)\b", lower)
+    )
+    is_rag_preferred = is_opentext_product or bool(
+        re.search(
+            r"\b(polic(?:y|ies)|guide|doc(?:s|ument(?:ation)?)?|internal|knowledge|support|"
+            r"rag|retrieval|vector|embedding|langgraph|langchain|orchestrat|agentic|mcp|"
+            r"protocol|architecture|pipeline|workflow)\b",
+            lower,
+        )
+    )
+    needs_realtime = bool(
+        re.search(
+            r"\b(weather|temperature|stock|price|news|latest|currency|"
+            r"exchange\s*rate|live|traffic|flight|crypto|score|sports)\b",
+            lower,
+        )
+    )
+    is_prediction = bool(
+        re.search(
+            r"\b(predict(?:ion)?|forecast|outlook|future|tomorrow|"
+            r"next\s+(?:\d+\s*)?(?:days?|weeks?|months?|years?|quarters?)|"
+            r"\d+\s*(?:months?|years?|weeks?|days?|quarters?)|"
+            r"will\s+(?:go|be|rise|fall|drop|increase|crash)|trend|estimate|projection)\b",
+            lower,
+        )
+    ) or (
+        "forecast" in lower
+        and any(w in lower for w in ("stock", "share", "market", "price", "ticker"))
+    )
+    is_factual = bool(
+        re.search(
+            r"\b(who is|who was|what is|what are|ceo|president|founder|chairman|"
+            r"headquarters|revenue|employees|founded|market\s*cap)\b",
+            lower,
+        )
+    )
+    needs_web = bool(re.search(r"^(who|what|where|when|why|how|which)\b", lower)) or is_factual
+    is_greeting = any(lower.startswith(g) for g in ("hello", "hi ", "hi!", "hey", "greetings", "thank", "thanks"))
+    is_math = bool(re.match(r"^[\d\s+\-*/().^]+$", prompt)) or bool(
+        re.search(r"\b(calculate|convert|compute)\b", lower)
+    )
+    is_time_query = bool(re.search(r"\b(time\s+(?:in|at)|what\s+time|timezone|clock\s+(?:in|at|for))\b", lower))
+    is_dictionary = bool(re.search(r"\b(define|meaning\s+of|definition)\b", lower))
+    is_tell_about = bool(re.search(r"\b(tell\s+(?:me\s+)?about|who\s+is|who\s+was)\b", lower))
+
+    if is_greeting:
+        return "direct", "[regex] Simple greeting → direct LLM response."
+    if is_math:
+        return "mcp_only", "[regex] Math/computation detected → calculator tool."
+    if is_time_query:
+        return "mcp_only", "[regex] Time/timezone query → world clock tool."
+    if is_dictionary:
+        return "mcp_only", "[regex] Dictionary/definition query → dictionary tool."
+    if is_prediction and needs_realtime:
+        return "mcp_only", "[regex] Prediction/forecast query → web search."
+    if is_opentext_product and not needs_realtime:
+        return "rag_only", "[regex] OpenText product query → internal docs."
+    if is_rag_preferred and not needs_realtime:
+        return "rag_only", "[regex] Internal knowledge query → document store."
+    if (is_opentext_general or is_rag_preferred) and (needs_realtime or is_factual) and not is_prediction:
+        return "hybrid", "[regex] Knowledge query + real-time data → RAG + MCP."
+    if needs_realtime or needs_web:
+        return "mcp_only", "[regex] Real-time or factual question → external tools."
+    if is_tell_about:
+        return "mcp_only", "[regex] Informational query → external knowledge."
+    return "direct", "[regex] General question → direct LLM response."
+
+
+def planner_node(state: AgentState) -> dict:
+    """Classify intent and decide the execution route using LLM (regex fallback)."""
+    prompt = state["user_prompt"]
+    lower = prompt.lower()
+
+    # ─── Quick overrides (no LLM needed) ───
+    if "rag only" in lower:
+        route, reasoning = "rag_only", "Explicit RAG override → searching internal knowledge base only."
+    elif "mcp tools only" in lower:
+        route, reasoning = "mcp_only", "Explicit MCP override → using external tools only."
+    else:
+        # ─── Try LLM-based classification first ───
+        llm_result = _llm_classify_route(prompt)
+        if llm_result:
+            route, reasoning = llm_result
+            reasoning = f"[LLM] {reasoning}"
+        else:
+            # ─── Regex Fallback (when LLM is unavailable) ───
+            _log("PLANNER: LLM unavailable, falling back to regex classification")
+            route, reasoning = _regex_classify_route(prompt)
+
+    _log(f"PLANNER: route={route} | {reasoning}")
+
+    return {
+        "route": route,
+        "plan_reasoning": reasoning,
+        "execution_log": [
+            {
+                "node": "planner",
+                "route": route,
+                "reasoning": reasoning,
+                "timestamp": time.time(),
+            }
+        ],
+    }
+
+
+def rag_node(state: AgentState) -> dict:
+    """Retrieve relevant context from the built-in knowledge base via TF-IDF."""
+    query = state["user_prompt"]
+    _log(f"RAG: searching for \"{query[:60]}...\"")
+
+    start = time.time()
+    results = _rag_engine.search(query, top_k=5)
+    elapsed_ms = round((time.time() - start) * 1000, 1)
+
+    sources = []
+    context_parts = []
+    for r in results:
+        chunk = r["chunk"]
+        sources.append(
+            {
+                "source": chunk["source"],
+                "score": r["score"],
+                "preview": chunk["content"][:120] + "...",
+            }
+        )
+        context_parts.append(f"[Source: {chunk['source']}]\n{chunk['content']}")
+
+    context = "\n\n".join(context_parts) if context_parts else ""
+    top_score = results[0]["score"] if results else 0.0
+    _log(f"RAG: {len(results)} chunks in {elapsed_ms}ms (top score: {top_score})")
+
+    return {
+        "rag_context": context,
+        "rag_sources": sources,
+        "execution_log": [
+            {
+                "node": "rag",
+                "chunks_found": len(results),
+                "search_time_ms": elapsed_ms,
+                "top_score": top_score,
+                "sources": [s["source"] for s in sources],
+                "timestamp": time.time(),
+            }
+        ],
+    }
+
+
+def tool_node(state: AgentState) -> dict:
+    """Execute external tool calls (real API calls) based on the user prompt."""
+    prompt = state["user_prompt"]
+    _log("TOOLS: analyzing prompt for tool calls...")
+
+    start = time.time()
+    results = run_tools(prompt)
+    elapsed_ms = round((time.time() - start) * 1000, 1)
+
+    _log(f"TOOLS: {len(results)} tool(s) executed in {elapsed_ms}ms")
+    for r in results:
+        _log(f"  → {r[:120]}...")
+
+    return {
+        "tool_results": results,
+        "execution_log": [
+            {
+                "node": "tools",
+                "tools_executed": len(results),
+                "tool_names": [
+                    (re.match(r"Tool \[(\w+)\]", r) or type("", (), {"group": lambda s, i: "?"})())
+                    .group(1)
+                    for r in results
+                ],
+                "execution_time_ms": elapsed_ms,
+                "timestamp": time.time(),
+            }
+        ],
+    }
+
+
+def synthesizer_node(state: AgentState) -> dict:
+    """Combine RAG context + tool results and produce the final response via LLM."""
+    prompt = state["user_prompt"]
+    rag_context = state.get("rag_context", "")
+    tool_results = state.get("tool_results", [])
+    _log("SYNTHESIZER: assembling final response...")
+
+    # Build enhanced prompt with all collected context
+    parts = [prompt]
+    if rag_context:
+        parts.append(f"\n\n[RETRIEVED KNOWLEDGE (RAG)]\n{rag_context}")
+    if tool_results:
+        parts.append(f"\n\n[TOOL RESULTS (MCP)]\n" + "\n".join(tool_results))
+
+    enhanced = "\n".join(parts)
+
+    system = (
+        "You are an intelligent AI agent. You have retrieved knowledge from an internal "
+        "document store (RAG) and/or executed live tools (MCP) to gather information.\n\n"
+        "RULES:\n"
+        "1. Use the provided context and tool data to answer the user's question directly and professionally.\n"
+        "2. Do NOT invent numbers or data points that are not in the provided context.\n"
+        "3. For STOCK PREDICTION / FORECAST queries: you MUST use the trend data, price ranges, "
+        "and percentage changes from the tool results to provide a data-driven outlook and analysis. "
+        "Discuss the current trend direction, momentum, support/resistance levels from the 30-day range, "
+        "and any relevant context. Add a disclaimer that this is analysis, not financial advice.\n"
+        "4. Cite sources when relevant. Be concise and confident.\n"
+        "5. NEVER say 'I cannot answer' or 'the tool could not find data' when tool results ARE present — "
+        "always use the data you have."
+    )
+
+    # Try LLM synthesis
+    response, model = call_llm(
+        [{"role": "user", "content": enhanced}], system_prompt=system
+    )
+
+    if not response:
+        # Template-based fallback when no LLM is available
+        model = "template (offline)"
+        sections = []
+        if rag_context:
+            source_names = list(set(s["source"] for s in state.get("rag_sources", [])))
+            sections.append(f"**Retrieved from knowledge base** ({', '.join(source_names)}):\n")
+            for s in state.get("rag_sources", [])[:3]:
+                sections.append(f"> {s['preview']}\n")
+        if tool_results:
+            sections.append("\n**Tool Results:**\n")
+            for tr in tool_results:
+                sections.append(f"- {tr}\n")
+        if not sections:
+            # Last-resort: try quick tool calls for direct-route queries with no data
+            _log("SYNTHESIZER: no context available, attempting quick tool lookup...")
+            quick_results = run_tools(prompt)
+            if quick_results:
+                sections.append("**Results:**\n")
+                for tr in quick_results:
+                    sections.append(f"- {tr}\n")
+            else:
+                sections.append(
+                    f'Processed your query: "{prompt}". '
+                    f"I don't have enough context to provide a detailed answer. "
+                    f"Try rephrasing or asking about weather, stocks, time, definitions, or topics in our knowledge base."
+                )
+        response = "\n".join(sections)
+
+    _log(f"SYNTHESIZER: response via {model} ({len(response)} chars)")
+
+    return {
+        "final_response": response,
+        "active_model": model,
+        "execution_log": [
+            {
+                "node": "synthesizer",
+                "model": model,
+                "response_length": len(response),
+                "context_sources": {"rag": bool(rag_context), "tools": len(tool_results)},
+                "timestamp": time.time(),
+            }
+        ],
+    }
+
+
+# ═══════════════════════════════════════════════════════════
+#  CONDITIONAL ROUTERS
+# ═══════════════════════════════════════════════════════════
+
+
+def route_after_plan(state: AgentState) -> str:
+    """Route from planner → rag, tools, or synthesizer."""
+    route = state.get("route", "direct")
+    if route in ("rag_only", "hybrid"):
+        return "rag"
+    elif route == "mcp_only":
+        return "tools"
+    return "synthesizer"
+
+
+def route_after_rag(state: AgentState) -> str:
+    """After RAG: continue to tools (hybrid) or synthesize (rag_only)."""
+    if state.get("route") == "hybrid":
+        return "tools"
+    return "synthesizer"
+
+
+# ═══════════════════════════════════════════════════════════
+#  GRAPH ASSEMBLY
+# ═══════════════════════════════════════════════════════════
+
+
+def build_graph():
+    """Construct and compile the LangGraph directed workflow."""
+    builder = StateGraph(AgentState)
+
+    # ── Register Nodes ──
+    builder.add_node("intake", intake_node)
+    builder.add_node("planner", planner_node)
+    builder.add_node("rag", rag_node)
+    builder.add_node("tools", tool_node)
+    builder.add_node("synthesizer", synthesizer_node)
+
+    # ── Define Edges ──
+    builder.add_edge(START, "intake")
+    builder.add_edge("intake", "planner")
+
+    # Conditional: planner → rag | tools | synthesizer
+    builder.add_conditional_edges(
+        "planner",
+        route_after_plan,
+        {"rag": "rag", "tools": "tools", "synthesizer": "synthesizer"},
+    )
+
+    # Conditional: rag → tools (hybrid) | synthesizer (rag_only)
+    builder.add_conditional_edges(
+        "rag",
+        route_after_rag,
+        {"tools": "tools", "synthesizer": "synthesizer"},
+    )
+
+    # Tools always → synthesizer
+    builder.add_edge("tools", "synthesizer")
+
+    # Synthesizer → END
+    builder.add_edge("synthesizer", END)
+
+    return builder.compile()
+
+
+# ═══════════════════════════════════════════════════════════
+#  PUBLIC API
+# ═══════════════════════════════════════════════════════════
+
+# Pre-compiled graph singleton
+_graph = None
+
+
+def get_graph():
+    """Get (or build) the compiled LangGraph workflow."""
+    global _graph
+    if _graph is None:
+        _graph = build_graph()
+    return _graph
+
+
+def run_workflow(prompt: str) -> dict:
+    """
+    Run the full agentic workflow for a given prompt.
+
+    Returns the complete final state including the response,
+    execution log, model used, RAG sources, and tool results.
+    """
+    graph = get_graph()
+    initial_state: dict = {
+        "user_prompt": prompt,
+        "route": "",
+        "plan_reasoning": "",
+        "rag_context": "",
+        "rag_sources": [],
+        "tool_results": [],
+        "final_response": "",
+        "active_model": "",
+        "execution_log": [],
+        "error": "",
+    }
+    try:
+        result = graph.invoke(initial_state)
+        return dict(result)
+    except Exception as e:
+        return {
+            **initial_state,
+            "error": str(e),
+            "final_response": f"Workflow error: {e}",
+        }
+
+
+# ═══════════════════════════════════════════════════════════
+#  CLI ENTRY POINT
+# ═══════════════════════════════════════════════════════════
+
+if __name__ == "__main__":
+    prompt = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else "What is RAG in AI?"
+
+    print(f"\n{'=' * 60}")
+    print(f"  LangGraph Agentic Workflow")
+    print(f"{'=' * 60}")
+    print(f"  Prompt: {prompt}")
+    print(f"{'=' * 60}\n")
+
+    # Enable verbose logging for CLI
+    os.environ["VERBOSE"] = "true"
+
+    start_time = time.time()
+    result = run_workflow(prompt)
+    elapsed = time.time() - start_time
+
+    print(f"\n{'─' * 60}")
+    print(f"  RESPONSE (via {result['active_model']})")
+    print(f"{'─' * 60}")
+    print(f"\n{result['final_response']}\n")
+
+    print(f"{'─' * 60}")
+    print(f"  EXECUTION SUMMARY")
+    print(f"{'─' * 60}")
+    print(f"  Route:    {result['route']}")
+    print(f"  Reason:   {result['plan_reasoning']}")
+    print(f"  RAG:      {len(result['rag_sources'])} sources retrieved")
+    print(f"  Tools:    {len(result['tool_results'])} results")
+    print(f"  Model:    {result['active_model']}")
+    print(f"  Time:     {elapsed:.2f}s")
+    print(f"  Steps:    {len(result['execution_log'])} nodes executed")
+    print()
+
+    if result.get("error"):
+        print(f"  ⚠ Error: {result['error']}")
+
+    # Print detailed execution trace
+    print(f"{'─' * 60}")
+    print(f"  EXECUTION TRACE")
+    print(f"{'─' * 60}")
+    for i, entry in enumerate(result.get("execution_log", []), 1):
+        node = entry.get("node", "?")
+        ts = entry.get("timestamp", 0)
+        details = {k: v for k, v in entry.items() if k not in ("node", "timestamp")}
+        print(f"  {i}. [{node}] {json.dumps(details, default=str)}")
+    print()

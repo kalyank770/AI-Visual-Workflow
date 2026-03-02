@@ -119,6 +119,68 @@ export async function getStockPrice(ticker: string): Promise<string | null> {
   }
 }
 
+// ─── Stock Trend Analysis (for prediction/forecast queries) ─────────
+// Uses 1-month chart data to provide trend context instead of just latest price.
+
+export async function getStockAnalysis(ticker: string): Promise<string | null> {
+  try {
+    const symbol = ticker.toUpperCase().trim();
+    const url = `/api/yahoo-chart/v8/finance/chart/${symbol}?interval=1d&range=1mo`;
+    const response = await fetch(url);
+
+    if (!response.ok) return null;
+
+    const data = await response.json();
+    const result = data.chart?.result?.[0];
+    if (!result) return null;
+
+    const meta = result.meta;
+    const price = meta.regularMarketPrice;
+    const prevClose = meta.chartPreviousClose || meta.previousClose;
+    const change = price - prevClose;
+    const changePercent = prevClose ? (change / prevClose) * 100 : 0;
+    const currency = meta.currency || "USD";
+    const name = meta.shortName || symbol;
+    const exchange = meta.exchangeName || "N/A";
+
+    const closes: number[] = (result.indicators?.quote?.[0]?.close || []).filter((v: any) => typeof v === "number");
+    let trendSummary = "";
+    if (closes.length >= 5) {
+      const monthStart = closes[0];
+      const monthEnd = closes[closes.length - 1];
+      const monthChange = monthEnd - monthStart;
+      const monthPct = monthStart ? (monthChange / monthStart) * 100 : 0;
+      const high30 = Math.max(...closes);
+      const low30 = Math.min(...closes);
+      const avg30 = closes.reduce((a, b) => a + b, 0) / closes.length;
+      const recent5 = closes.slice(-5);
+      const fiveDayChange = recent5[recent5.length - 1] - recent5[0];
+      const fiveDayPct = recent5[0] ? (fiveDayChange / recent5[0]) * 100 : 0;
+      const trend = monthPct > 1 ? "upward" : monthPct < -1 ? "downward" : "sideways";
+
+      trendSummary = [
+        `30-Day Trend: ${trend} (${monthPct >= 0 ? "+" : ""}${monthPct.toFixed(2)}%)`,
+        `30-Day Range: ${currency} ${low30.toFixed(2)} - ${currency} ${high30.toFixed(2)}`,
+        `30-Day Avg: ${currency} ${avg30.toFixed(2)}`,
+        `5-Day Change: ${fiveDayPct >= 0 ? "+" : ""}${fiveDayPct.toFixed(2)}%`,
+      ].join("\n");
+    }
+
+    return [
+      `${name} (${symbol}) on ${exchange}:`,
+      `Current: ${currency} ${price.toFixed(2)}`,
+      `Daily: ${change >= 0 ? "+" : ""}${change.toFixed(2)} (${changePercent >= 0 ? "+" : ""}${changePercent.toFixed(2)}%)`,
+      trendSummary,
+      `(Trend context from Yahoo Finance, may be delayed 15-20 min)`,
+    ]
+      .filter(Boolean)
+      .join("\n");
+  } catch (error) {
+    console.warn("Stock analysis fetch failed:", error);
+    return null;
+  }
+}
+
 // ─── Weather Lookup ────────────────────────────────────────
 // Uses Open-Meteo API (free, no key, open-source).
 
@@ -189,11 +251,47 @@ export async function getWeather(city: string): Promise<string | null> {
 export async function runToolsForQuery(userPrompt: string): Promise<string[]> {
   const toolResults: string[] = [];
   const lower = userPrompt.toLowerCase();
+  const isStockPredictionQuery = isStockPredictionPrompt(userPrompt);
 
-  // ── Stock Detection ──
-  if (lower.includes("stock") || lower.includes("share price") || lower.includes("trading") || lower.includes("market price") || lower.includes("ticker")) {
+  // ── Stock Prediction Detection (must run before generic stock detection) ──
+  if (isStockPredictionQuery) {
+    console.info("[ToolRouter] Route=stock_prediction", { prompt: userPrompt });
     const stockQuery = extractStockQuery(userPrompt);
     if (stockQuery) {
+      const isTicker = /^[A-Z]{1,5}$/.test(stockQuery);
+      let ticker = stockQuery;
+      if (!isTicker) {
+        const searchResult = await searchStockTicker(stockQuery);
+        if (searchResult?.symbol) ticker = searchResult.symbol;
+      }
+
+      const analysisData = await getStockAnalysis(ticker);
+      if (analysisData) {
+        toolResults.push(`Tool [StockAnalysis]: ${analysisData}`);
+      }
+
+      const wikiEntity = getCompanyNameForWiki(stockQuery, ticker);
+      const wikiData = await getWikipediaSummary(wikiEntity);
+      if (wikiData) {
+        toolResults.push(`Tool [Wikipedia]: ${wikiData}`);
+      }
+    }
+  }
+
+  // ── Stock Detection ──
+  // Matches: "apple stock", "stock price", "MSFT price", "price of tesla", "current price of X"
+  // Must check BEFORE Wikipedia to avoid "what is X stock" being misrouted
+  const hasStockKeyword = /\b(stock|share|ticker|equity|trading|market)\b/.test(lower);
+  const hasPriceKeyword = /\b(price|value|worth|quote|current|cost)\b/.test(lower);
+  // Check for company names or tickers
+  const hasCompanyIndicator = /\b[A-Z]{2,5}\b/.test(userPrompt) || 
+    /\b(apple|microsoft|msft|google|googl|alphabet|amazon|amzn|meta|fb|tesla|tsla|netflix|nflx|nvidia|nvda|amd|intel|intc|cisco|csco|oracle|orcl|ibm|opentext|otex)\b/i.test(lower);
+  const mightBeStock = (hasStockKeyword || hasPriceKeyword) && hasCompanyIndicator;
+  
+  if (!isStockPredictionQuery && mightBeStock) {
+    const stockQuery = extractStockQuery(userPrompt);
+    if (stockQuery) {
+      console.info("[ToolRouter] Route=stock_price", { prompt: userPrompt });
       const isTicker = /^[A-Z]{1,5}$/.test(stockQuery);
       let ticker = stockQuery;
       if (!isTicker) {
@@ -209,25 +307,11 @@ export async function runToolsForQuery(userPrompt: string): Promise<string[]> {
     }
   }
 
-  // ── Price without "stock" keyword — "AAPL price", "price of Tesla" ──
-  if (!toolResults.length && (lower.includes("price") || lower.includes("worth"))) {
-    const stockQuery = extractStockQuery(userPrompt);
-    if (stockQuery) {
-      const isTicker = /^[A-Z]{1,5}$/.test(stockQuery);
-      let ticker = stockQuery;
-      if (!isTicker) {
-        const searchResult = await searchStockTicker(stockQuery);
-        if (searchResult) ticker = searchResult.symbol;
-      }
-      const priceData = await getStockPrice(ticker);
-      if (priceData) {
-        toolResults.push(`Tool [StockPrice]: ${priceData}`);
-      }
-    }
-  }
-
   // ── Weather Detection ──
-  if (lower.includes("weather") || lower.includes("temperature") || lower.includes("forecast") || lower.includes("climate")) {
+  const isWeatherQuery = /\b(weather|temperature|climate|rain|raining|snow|snowing|sunny|cloudy|storm|wind|humidity)\b/.test(lower) || 
+    (lower.includes("forecast") && !isStockPredictionQuery);
+  if (isWeatherQuery) {
+    console.info("[ToolRouter] Route=weather", { prompt: userPrompt });
     const city = extractCity(userPrompt);
     if (city) {
       const weatherData = await getWeather(city);
@@ -280,7 +364,7 @@ export async function runToolsForQuery(userPrompt: string): Promise<string[]> {
   // Also trigger for leadership/role queries like "opentext present ceo", "founder of tesla"
   const isLeadershipQuery = /\b(ceo|president|founder|chairman|cto|cfo|coo|chief\s*executive|chief\s*officer|managing\s*director|leader|head\s+of|who\s+runs|who\s+leads|who\s+manages|who\s+owns|who\s+founded)\b/.test(lower);
   const isCompanyInfoQuery = /\b(headquarters|hq|location|revenue|employees|founded|acquired|acquisition|market\s*cap|valuation|subsidiaries|products|industry)\b/.test(lower);
-  const isWikiTrigger = lower.includes("who is") || lower.includes("who was") || lower.includes("what is") || lower.includes("tell me about") || lower.includes("wikipedia") || lower.includes("history of") || lower.includes("explain") || isLeadershipQuery || isCompanyInfoQuery;
+  const isWikiTrigger = lower.includes("who is") || lower.includes("who was") || lower.includes("what is") || lower.includes("tell me about") || lower.includes("wikipedia") || lower.includes("history of") || lower.includes("biography") || lower.includes("explain") || isLeadershipQuery || isCompanyInfoQuery;
   if (isWikiTrigger) {
     // For leadership/company info queries, ALWAYS run Wikipedia (even if other tools ran)
     // For general wiki queries, only run if no other tool matched
@@ -303,34 +387,50 @@ export async function runToolsForQuery(userPrompt: string): Promise<string[]> {
   }
 
   // ── Time / Timezone Detection ──
+  // Matches: "5pm utc to ist", "time in london", "10am pst to est"
   // Skip if "today" is just a temporal modifier for a leadership/factual query
-  // e.g. "ceo today for opentext" is NOT a time question
+  const hasTimeKeywords = /\b(time|timezone|time\s*zone|clock|utc|gmt|pst|est|cst|mst|ist|cet|jst|bst)\b/i.test(lower);
+  const isTimezoneConversion = /\b(\d{1,2}\s*(?:am|pm))\s+(utc|gmt|pst|est|cst|mst|ist|cet|jst|bst)\s+to\s+(utc|gmt|pst|est|cst|mst|ist|cet|jst|bst)\b/i.test(lower);
   const isActualTimeQuery = (
-    (lower.includes("time") || lower.includes("timezone") || lower.includes("clock") || lower.includes("date in")) &&
+    (hasTimeKeywords || isTimezoneConversion || lower.includes("date in")) &&
     !isLeadershipQuery && !isCompanyInfoQuery
   );
   if (isActualTimeQuery) {
+    console.info("[ToolRouter] Route=world_clock", { prompt: userPrompt });
     const timezone = extractTimezone(userPrompt);
     const timeData = getWorldTime(timezone);
     toolResults.push(`Tool [WorldClock]: ${timeData}`);
   }
 
   // ── Currency Conversion Detection ──
-  if (lower.includes("currency") || lower.includes("exchange rate") || lower.includes("forex") || lower.includes("fx") || /\b(usd|eur|gbp|inr|jpy|cad|aud|cny|chf|krw|brl|mxn|sgd|hkd|nzd|sek|nok|dkk|zar|thb|myr|php|idr|try|pln|czk|huf|ron|bgn|hrk|isk|dollar|euro|pound|rupee|yen|yuan|franc|won|peso|baht|ringgit|lira|rand)\s+(to|in|into|vs)\s+(usd|eur|gbp|inr|jpy|cad|aud|cny|chf|krw|brl|mxn|sgd|hkd|nzd|sek|nok|dkk|zar|thb|myr|php|idr|try|pln|czk|huf|ron|bgn|hrk|isk|dollar|dollars|euro|euros|pound|pounds|rupee|rupees|yen|yuan|franc|won|peso|baht|ringgit|lira|rand)\b/i.test(lower)) {
+  const isCurrencyQuery = lower.includes("currency") || lower.includes("exchange rate") || lower.includes("forex") || lower.includes("fx") || /\b(usd|eur|gbp|inr|jpy|cad|aud|cny|chf|krw|brl|mxn|sgd|hkd|nzd|sek|nok|dkk|zar|thb|myr|php|idr|try|pln|czk|huf|ron|bgn|hrk|isk|dollar|euro|pound|rupee|yen|yuan|franc|won|peso|baht|ringgit|lira|rand)\s+(to|in|into|vs)\s+(usd|eur|gbp|inr|jpy|cad|aud|cny|chf|krw|brl|mxn|sgd|hkd|nzd|sek|nok|dkk|zar|thb|myr|php|idr|try|pln|czk|huf|ron|bgn|hrk|isk|dollar|dollars|euro|euros|pound|pounds|rupee|rupees|yen|yuan|franc|won|peso|baht|ringgit|lira|rand)\b/i.test(lower);
+  if (isCurrencyQuery) {
+    console.info("[ToolRouter] Route=currency_conversion", { prompt: userPrompt });
     const currencyData = await convertCurrency(userPrompt);
     if (currencyData) {
+      console.info("[ToolRouter] Currency data fetched:", currencyData);
       toolResults.push(`Tool [Currency]: ${currencyData}`);
+    } else {
+      console.warn("[ToolRouter] Currency conversion failed - no data returned");
     }
   }
 
   // ── Unit Conversion Detection ──
+  // Matches both "convert 10 km to miles" AND "10 km to miles"
+  const hasUnitPattern = /\b\d+\.?\d*\s*(km|miles?|meter|metre|meters|metres|feet|foot|ft|celsius|fahrenheit|kg|lbs?|pound|pounds|gallon|gallons|liter|liters|litre|litres)\s+to\s+(km|miles?|meter|metre|meters|metres|feet|foot|ft|celsius|fahrenheit|kg|lbs?|pound|pounds|gallon|gallons|liter|liters|litre|litres)\b/i.test(lower);
   const conversionMatch = detectUnitConversion(userPrompt);
-  if (conversionMatch) {
-    toolResults.push(`Tool [UnitConverter]: ${conversionMatch}`);
+  if (conversionMatch || hasUnitPattern) {
+    console.info("[ToolRouter] Route=unit_converter", { prompt: userPrompt });
+    if (conversionMatch) {
+      toolResults.push(`Tool [UnitConverter]: ${conversionMatch}`);
+    }
   }
 
   // ── Math Detection ──
-  if (lower.includes("calculate") || lower.includes("compute") || lower.includes("solve") || /\d+\s*[\+\-\*\/\^]\s*\d+/.test(userPrompt)) {
+  // Matches: "23 + 45", "calculate X", "sqrt(144)", "2^10"
+  const hasMathPattern = /\d+\s*[\+\-\*\/\^]\s*\d+/.test(userPrompt) || /\b(sqrt|sin|cos|tan|log|ln|abs|pow)\s*\(/.test(lower);
+  if (lower.includes("calculate") || lower.includes("compute") || lower.includes("solve") || hasMathPattern) {
+    console.info("[ToolRouter] Route=calculator", { prompt: userPrompt });
     const mathExpr = extractMathExpression(userPrompt);
     if (mathExpr) {
       try {
@@ -352,6 +452,38 @@ export async function runToolsForQuery(userPrompt: string): Promise<string[]> {
   }
 
   return toolResults;
+}
+
+function isStockPredictionPrompt(prompt: string): boolean {
+  const lower = prompt.toLowerCase();
+  // Pattern 1: Traditional prediction keywords + stock context
+  const hasPredictionKeyword = /\b(predict(?:ion)?|forecast|outlook|future|trend|estimate|projection|next\s*\d*\s*(?:day|days|week|weeks|month|months|year|years|quarter|quarters)|\d+\s*(?:day|days|week|weeks|month|months|year|years|quarter|quarters))\b/i.test(lower);
+  const hasStockContext = /\b(stock|share|ticker|market|price|trading)\b/i.test(lower) || /\b[A-Z]{2,5}\b/.test(prompt);
+  
+  // Pattern 2: "will X stock go up/down" queries
+  const isWillQuery = /\bwill\b/.test(lower) && /\b(stock|share)\b/.test(lower) && /\b(go|be|rise|fall|drop|increase|decrease|crash)\b/.test(lower);
+  
+  return (hasPredictionKeyword && hasStockContext) || isWillQuery;
+}
+
+function getCompanyNameForWiki(stockQuery: string, ticker: string): string {
+  const map: Record<string, string> = {
+    AAPL: "Apple Inc",
+    MSFT: "Microsoft",
+    GOOGL: "Alphabet Inc",
+    AMZN: "Amazon",
+    META: "Meta Platforms",
+    TSLA: "Tesla",
+    NVDA: "Nvidia",
+    OTEX: "OpenText",
+  };
+
+  const fromTicker = map[ticker.toUpperCase()];
+  if (fromTicker) return fromTicker;
+
+  const q = stockQuery.trim().toLowerCase();
+  if (q === "opentext" || q === "open text" || q === "otex") return "OpenText";
+  return stockQuery;
 }
 
 // ─── Helper: Extract stock query from user prompt ──────────
@@ -1067,13 +1199,14 @@ async function wikiDeepSearch(query: string): Promise<string | null> {
     // "who is present CEO of opentext?" → "opentext"
     // "what is the capital of France?" → "France"
     // "tell me about quantum computing" → "quantum computing"
-    const searchQuery = extractSearchSubject(query);
+    const searchQuery = normalizeCompanyAlias(extractSearchSubject(query));
     console.log('[wikiDeepSearch] Query:', query, '→ Subject:', searchQuery);
 
     // Step 1: Search Wikipedia for the best matching article
     // Try with extracted subject first, then fall back to full query
-    const queries = searchQuery !== query.trim()
-      ? [searchQuery, query]
+    const normalizedOriginal = normalizeCompanyAlias(query.trim());
+    const queries = searchQuery !== normalizedOriginal
+      ? [searchQuery, normalizedOriginal]
       : [query];
 
     let articles: any[] = [];
@@ -1281,7 +1414,23 @@ function extractSearchSubject(query: string): string {
     subject = query.replace(/[?!.]+$/g, '').trim();
   }
 
-  return subject;
+  return normalizeCompanyAlias(subject);
+}
+
+function normalizeCompanyAlias(value: string): string {
+  const cleaned = value.trim();
+  const lower = cleaned.toLowerCase();
+  const aliases: Record<string, string> = {
+    otex: "OpenText",
+    "open text": "OpenText",
+    opentext: "OpenText",
+    googl: "Alphabet Inc",
+    goog: "Alphabet Inc",
+    meta: "Meta Platforms",
+    brk: "Berkshire Hathaway",
+    "brk-b": "Berkshire Hathaway",
+  };
+  return aliases[lower] || cleaned;
 }
 
 // ─── Extraction Helpers for New Tools ──────────────────────

@@ -540,6 +540,7 @@ const App: React.FC = () => {
     //    "microsoft headquarters" → also factual
     const isFactualQuestion = /\b(who is|who was|who are|who runs|who leads|who manages|who owns|who founded|ceo of|president of|founder of|chairman of|head of|leader of|headquarters of|employees of|revenue of)\b/.test(promptLower) ||
       /\b(ceo|chief\s*executive|president|founder|chairman|cto|cfo|coo|director|revenue|employees?|headquarters|hq|founded|acquired|acquisition|market\s*cap|valuation)\b/.test(promptLower);
+    const isDictionaryQuery = /\b(define|meaning of|definition|dictionary|synonym|antonym|pronounce|pronunciation|spell|spelling|what does .* mean|\w+\s+means?\??\s*$|\w+\s+meaning\??\s*$)\b/i.test(promptLower);
     const needsWebSearch = !isRagOnly && !isMcpOnly && (
       /^(who|what|where|when|why|how|which|whose|whom)\b/.test(promptLower) ||
       /\b(who is|who was|who are|who runs|who leads|who manages|who owns|what is|what are|what was|what does|how to|how does|how do|how is|how are|how many|how much|why is|why do|why does|why are|tell me|explain|describe|define|meaning of|meaning\??$|means\??$|synonym|antonym|definition|dictionary|pronounce|pronunciation|spell|spelling|difference between|compare|list of|history of|founder of|ceo of|president of|capital of|population of|headquarters of|largest|smallest|tallest|oldest|newest|best|worst|fastest)\b/.test(promptLower) ||
@@ -555,17 +556,21 @@ const App: React.FC = () => {
     const isMath = !isRagOnly && !isMcpOnly && !hasLeadershipTerms && (
       /^[\d\s\+\-\*\/\(\)\.]+$/.test(activePrompt) || // Pure math
       /^\d+[\+\-\*\/]\d+/.test(activePrompt.replace(/\s/g,'')) || // Embedded math
+      /\b(sqrt|sin|cos|tan|log|ln|abs|pow)\s*\(/.test(promptLower) || // Math functions
       /\b(convert|conversion)\b.*\b(unit|units|to)\b/.test(promptLower) ||
+      /\b\d+\.?\d*\s*(km|miles?|meter|metre|meters|metres|feet|foot|ft|celsius|fahrenheit|kg|lbs?|pound|pounds|gallon|gallons|liter|liters|litre|litres)\s+to\s+(km|miles?|meter|metre|meters|metres|feet|foot|ft|celsius|fahrenheit|kg|lbs?|pound|pounds|gallon|gallons|liter|liters|litre|litres)\b/i.test(promptLower) || // Direct unit conversion
       /(?:^|\b|\d)(celsius|fahrenheit|kelvin|mm|millimeter|millimetre|cm|centimeter|centimetre|cent|cents|meter|metre|meters|metres|km|kilometer|kilometre|inch|inches|foot|feet|ft|yard|yards|yd|mile|miles|mi|mg|milligram|gram|grams|kg|kilogram|kilograms|lb|lbs|pound|pounds|oz|ounce|ounces|ton|tons|tonne|tonnes|ml|milliliter|millilitre|liter|litre|liters|litres|gallon|gallons|gal|cup|cups|tsp|tbsp|teaspoon|tablespoon|fl\s*oz|sq\s*ft|square\s*feet|sq\s*m|square\s*meter|acre|acres|hectare|hectares|cc|cm3|m3)(?:\b|\s|\?|$)/.test(promptLower) ||
       /\b(kwh|kilowatt\s*hour|kilowatt\s*hours|btu|btus|watt\s*hour|wh|joule|joules|calorie|calories|kcal)\b/.test(promptLower) ||
       /\b(currency|exchange\s*rate|fx|forex)\b/.test(promptLower) ||
+      /\b(usd|eur|gbp|inr|jpy|cad|aud|cny|chf|krw|brl|mxn|sgd|hkd|nzd|sek|nok|dkk|zar|thb|myr|php|idr|try|pln|czk|huf|ron|bgn|hrk|isk|dollar|euro|pound|rupee|yen|yuan|franc|won|peso|baht|ringgit|lira|rand)\s+(to|in|into|vs)\s+(usd|eur|gbp|inr|jpy|cad|aud|cny|chf|krw|brl|mxn|sgd|hkd|nzd|sek|nok|dkk|zar|thb|myr|php|idr|try|pln|czk|huf|ron|bgn|hrk|isk|dollar|dollars|euro|euros|pound|pounds|rupee|rupees|yen|yuan|franc|won|peso|baht|ringgit|lira|rand)\b/.test(promptLower) ||
       /\b(add|subtract|difference|days?|weeks?|months?|years?)\b.*\b(to|from|between)\b/.test(promptLower) ||
       /\b(date|time)\s+math\b/.test(promptLower)
     );
     // Time/timezone queries route through MCP (WorldClock tool), not math
     // Exclude when leadership/factual terms are present (e.g. "ceo time at opentext" is NOT a time query)
     const isTimeQuery = !isRagOnly && !isMcpOnly && !hasLeadershipTerms && (
-      /\b(timezone|time\s*zone|utc|gmt|offset)\b/.test(promptLower) ||
+      /\b(timezone|time\s*zone|utc|gmt|pst|est|cst|mst|ist|cet|jst|bst|offset)\b/i.test(promptLower) ||
+      /\b(\d{1,2}\s*(?:am|pm))\s+(utc|gmt|pst|est|cst|mst|ist|cet|jst|bst)\s+to\s+(utc|gmt|pst|est|cst|mst|ist|cet|jst|bst)\b/i.test(promptLower) ||
       /\b(what|current|local)\s+(time|date)\b/.test(promptLower) ||
       /\btime\s+(in|at|for)\b/.test(promptLower) ||
       /\b(date|time)\s+(in|at|for)\b/.test(promptLower)
@@ -623,6 +628,10 @@ const App: React.FC = () => {
       // e.g. "microsoft ceo", "who founded tesla", "google headquarters"
       path = [...path, WorkflowStep.LG_TO_MCP, WorkflowStep.MCP_TO_LG];
       reasoningText = "Route: MCP → WEB SEARCH\n\n• Factual/company question detected.\n• Using web search for real-world information.\n• Skipping internal knowledge base.";
+    } else if (isDictionaryQuery) {
+      // Dictionary/definition queries should always invoke tools
+      path = [...path, WorkflowStep.LG_TO_MCP, WorkflowStep.MCP_TO_LG];
+      reasoningText = "Route: MCP ONLY\n\n• Dictionary query detected.\n• Using Dictionary tool.\n• Skipping internal knowledge base.";
     } else if (isDirect || (!isRagPreferred && !needsRealtimeTools && !needsWebSearch && !isFactualQuestion)) {
       // Direct / Simple (greetings, trivial)
       reasoningText = isDirect
@@ -738,7 +747,7 @@ const App: React.FC = () => {
 
            if (contextParts.length > 0) {
              enhancedPrompt = `${activePrompt}\n\n${contextParts.join('\n\n')}`;
-             systemPrompt = "You are an intelligent agent. You have retrieved knowledge from an internal document store (RAG) and/or executed live tools (MCP) to gather information. Using ONLY the provided context and tool data, answer the user's question directly and professionally. CRITICAL: Do NOT invent, fabricate, or add any data that is not explicitly present in the context. Cite the source documents when relevant. Be confident and direct.";
+             systemPrompt = "You are an intelligent agent with access to live data tools. You have just executed real-time APIs and/or retrieved internal documentation. CRITICAL INSTRUCTIONS:\n\n1. ALWAYS use the tool data provided below - it is CURRENT and ACCURATE (fetched seconds ago)\n2. NEVER use your training data for real-time information like exchange rates, stock prices, weather, or current events\n3. If tool data is present, it takes ABSOLUTE PRIORITY over any knowledge in your training\n4. The dates in tool output (e.g., 'as of YYYY-MM-DD') show the data is LIVE\n5. Answer directly using ONLY the provided context - do not add or invent any information\n\nProvided context and tool data:\n";
            }
         }
 

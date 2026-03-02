@@ -107,7 +107,8 @@ server.tool(
         "",
         ...lines,
         "",
-        `Use the **get_stock_price** tool with the correct ticker symbol from above (e.g. \`${results[0].symbol}\`).`,
+        `For current price queries, use **get_stock_price** with the correct ticker (e.g. \`${results[0].symbol}\`).`,
+        `For prediction/forecast/outlook queries, use **get_stock_analysis** with the ticker.`,
       ].join("\n");
 
       return { content: [{ type: "text", text }] };
@@ -127,7 +128,7 @@ server.tool(
 
 server.tool(
   "get_stock_price",
-  "Get the current/latest stock price for a given ticker symbol. If you only have a company name (not a ticker), use search_stock_ticker FIRST to find the correct ticker. IMPORTANT: Only report the data returned by this tool. Do NOT add analyst ratings, volume, or any other data that is not included in the response.",
+  "Get the current/latest stock price for a given ticker symbol. Use this ONLY for current price questions. For prediction/forecast/outlook/future-trend queries, use get_stock_analysis instead. If you only have a company name (not a ticker), use search_stock_ticker FIRST. IMPORTANT: Only report the data returned by this tool. Do NOT add analyst ratings, volume, or any other data that is not included in the response.",
   {
     ticker: z.string().describe(
       "The stock ticker symbol (e.g. AAPL, MSFT, OTEX, TSLA). Use search_stock_ticker first if you only know the company name."
@@ -214,6 +215,101 @@ server.tool(
         content: [{
           type: "text",
           text: `❌ Failed to fetch stock price for "${symbol}": ${error.message}\n\nTip: Use the **search_stock_ticker** tool first to find the correct ticker symbol.`,
+        }],
+      };
+    }
+  }
+);
+
+// ─── Tool 2b: Stock Trend Analysis (Prediction Context) ─────────────
+// For forecast/prediction questions, this gives 30-day trend context.
+
+server.tool(
+  "get_stock_analysis",
+  "Get 30-day stock trend analysis for prediction/forecast context. Use this for prompts containing prediction, forecast, outlook, future trend, or next month/quarter/year. If you only have a company name, use search_stock_ticker first.",
+  {
+    ticker: z.string().describe(
+      "The stock ticker symbol (e.g. AAPL, MSFT, OTEX, TSLA). Use search_stock_ticker first if you only know the company name."
+    ),
+  },
+  async ({ ticker }) => {
+    const symbol = ticker.toUpperCase().trim();
+
+    try {
+      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&range=1mo`;
+      const response = await fetch(url, {
+        headers: { "User-Agent": "MCP-Server/1.0" },
+      });
+
+      if (!response.ok) {
+        throw new Error(`Yahoo Finance returned ${response.status}`);
+      }
+
+      const data = await response.json();
+      const result = data.chart?.result?.[0];
+
+      if (!result) {
+        return {
+          content: [{
+            type: "text",
+            text: `❌ Ticker "${symbol}" not found. Use search_stock_ticker first to identify the correct symbol.`,
+          }],
+        };
+      }
+
+      const meta = result.meta;
+      const price = meta.regularMarketPrice;
+      const prevClose = meta.chartPreviousClose || meta.previousClose || price;
+      const dailyChange = price - prevClose;
+      const dailyPct = prevClose ? (dailyChange / prevClose) * 100 : 0;
+      const currency = meta.currency || "USD";
+      const displayName = meta.shortName || symbol;
+
+      const closes = (result.indicators?.quote?.[0]?.close || []).filter(
+        (v) => typeof v === "number"
+      );
+
+      let trendRows = [];
+      if (closes.length >= 5) {
+        const monthStart = closes[0];
+        const monthEnd = closes[closes.length - 1];
+        const monthChange = monthEnd - monthStart;
+        const monthPct = monthStart ? (monthChange / monthStart) * 100 : 0;
+        const low30 = Math.min(...closes);
+        const high30 = Math.max(...closes);
+        const avg30 = closes.reduce((a, b) => a + b, 0) / closes.length;
+        const recent5 = closes.slice(-5);
+        const fiveDayChange = recent5[recent5.length - 1] - recent5[0];
+        const fiveDayPct = recent5[0] ? (fiveDayChange / recent5[0]) * 100 : 0;
+        const trendDirection = monthPct > 1 ? "Upward" : monthPct < -1 ? "Downward" : "Sideways";
+
+        trendRows = [
+          `| **30-Day Trend** | ${trendDirection} (${monthPct >= 0 ? "+" : ""}${monthPct.toFixed(2)}%) |`,
+          `| **30-Day Range** | ${currency} ${low30.toFixed(2)} - ${currency} ${high30.toFixed(2)} |`,
+          `| **30-Day Average** | ${currency} ${avg30.toFixed(2)} |`,
+          `| **5-Day Change** | ${fiveDayPct >= 0 ? "+" : ""}${fiveDayPct.toFixed(2)}% |`,
+        ];
+      }
+
+      const text = [
+        `## ${displayName} (${symbol}) — Trend Analysis`,
+        `**Exchange:** ${meta.exchangeName || "N/A"}`,
+        "",
+        `| Metric | Value |`,
+        `|--------|-------|`,
+        `| **Current Price** | ${currency} ${price.toFixed(2)} |`,
+        `| **Daily Change** | ${dailyChange >= 0 ? "+" : ""}${dailyChange.toFixed(2)} (${dailyPct >= 0 ? "+" : ""}${dailyPct.toFixed(2)}%) |`,
+        ...trendRows,
+        "",
+        `_Data from Yahoo Finance. Prices may be delayed 15-20 min._`,
+      ].join("\n");
+
+      return { content: [{ type: "text", text }] };
+    } catch (error) {
+      return {
+        content: [{
+          type: "text",
+          text: `❌ Failed to fetch stock analysis for "${symbol}": ${error.message}`,
         }],
       };
     }
@@ -551,89 +647,7 @@ server.tool(
 );
 
 // ═══════════════════════════════════════════════════════════
-//  Tool 6: get_news — Trending articles from Wikipedia
-// ═══════════════════════════════════════════════════════════
-
-server.tool(
-  "get_news",
-  "Get trending news, headlines, and 'on this day' events. Optionally filter by topic. Uses Wikipedia's free Featured Content API — no API key needed.",
-  {
-    topic: z.string().optional().describe(
-      "Optional topic to look up. Leave empty for general trending articles."
-    ),
-  },
-  async ({ topic }) => {
-    try {
-      const now = new Date();
-      const yyyy = now.getFullYear();
-      const mm = String(now.getMonth() + 1).padStart(2, "0");
-      const dd = String(now.getDate()).padStart(2, "0");
-
-      // If a topic is provided, get its Wikipedia summary
-      if (topic) {
-        const url = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(topic)}`;
-        const res = await fetch(url);
-        if (res.ok) {
-          const data = await res.json();
-          if (data.extract) {
-            return {
-              content: [{
-                type: "text",
-                text: [
-                  `## 📰 Latest on "${topic}"`,
-                  "",
-                  data.extract,
-                  "",
-                  `*Source: Wikipedia*`,
-                ].join("\n"),
-              }],
-            };
-          }
-        }
-      }
-
-      // General: today's featured content
-      const url = `https://en.wikipedia.org/api/rest_v1/feed/featured/${yyyy}/${mm}/${dd}`;
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`Wikipedia API returned ${res.status}`);
-
-      const data = await res.json();
-      const lines = [`## 📰 Today's Headlines (${now.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" })})`, ""];
-
-      if (data.tfa) {
-        lines.push(`### Featured Article`);
-        lines.push(`**${data.tfa.titles?.normalized || "Article"}** — ${data.tfa.extract || ""}`);
-        lines.push("");
-      }
-
-      if (data.onthisday?.length > 0) {
-        lines.push(`### On This Day`);
-        for (const event of data.onthisday.slice(0, 4)) {
-          lines.push(`- **${event.year}:** ${event.text}`);
-        }
-        lines.push("");
-      }
-
-      if (data.mostread?.articles?.length > 0) {
-        lines.push(`### Trending Now`);
-        for (const a of data.mostread.articles.slice(0, 5)) {
-          if (a.titles?.normalized) {
-            lines.push(`- **${a.titles.normalized}** — ${(a.extract || "").slice(0, 120)}…`);
-          }
-        }
-        lines.push("");
-      }
-
-      lines.push(`*Source: Wikipedia Featured Content*`);
-      return { content: [{ type: "text", text: lines.join("\n") }] };
-    } catch (error) {
-      return { content: [{ type: "text", text: `❌ Could not fetch news: ${error.message}` }] };
-    }
-  }
-);
-
-// ═══════════════════════════════════════════════════════════
-//  Tool 7: get_dictionary — Word definitions
+//  Tool 6: get_dictionary — Word definitions
 // ═══════════════════════════════════════════════════════════
 
 server.tool(
@@ -813,94 +827,7 @@ server.tool(
   }
 );
 
-// ═══════════════════════════════════════════════════════════
-//  Tool 10: convert_units — Unit conversion
-// ═══════════════════════════════════════════════════════════
-
-server.tool(
-  "convert_units",
-  "Convert between common units: length (km↔mi, m↔ft, cm↔in), weight (kg↔lbs, g↔oz), temperature (°C↔°F), volume (L↔gal), speed (mph↔km/h). No API key needed.",
-  {
-    value: z.number().describe("The numeric value to convert. Example: 100"),
-    from: z.string().describe("Unit to convert FROM. Examples: 'km', 'lbs', 'celsius', 'mph'"),
-    to: z.string().describe("Unit to convert TO. Examples: 'miles', 'kg', 'fahrenheit', 'kmh'"),
-  },
-  async ({ value, from, to }) => {
-    const normalize = (u) => {
-      const unit = u.toLowerCase().trim().replace(/s$/, "");
-      const map = {
-        "km": "km", "kilometer": "km", "kilometre": "km",
-        "mi": "miles", "mile": "miles",
-        "kg": "kg", "kilogram": "kg",
-        "lb": "lbs", "pound": "lbs",
-        "°c": "celsius", "c": "celsius", "celsius": "celsius", "centigrade": "celsius",
-        "°f": "fahrenheit", "f": "fahrenheit", "fahrenheit": "fahrenheit",
-        "meter": "m", "metre": "m", "m": "m",
-        "ft": "ft", "feet": "ft", "foot": "ft",
-        "liter": "l", "litre": "l", "l": "l",
-        "gallon": "gal", "gal": "gal",
-        "cm": "cm", "centimeter": "cm", "centimetre": "cm",
-        "inch": "in", "inche": "in", "in": "in",
-        "oz": "oz", "ounce": "oz",
-        "gram": "g", "g": "g",
-        "mph": "mph",
-        "km/h": "kmh", "kmh": "kmh", "kph": "kmh",
-      };
-      return map[unit] || null;
-    };
-
-    const conversions = {
-      km:   { miles: (v) => v * 0.621371 },
-      miles: { km: (v) => v * 1.60934 },
-      kg:   { lbs: (v) => v * 2.20462 },
-      lbs:  { kg: (v) => v * 0.453592 },
-      celsius: { fahrenheit: (v) => v * 9 / 5 + 32 },
-      fahrenheit: { celsius: (v) => (v - 32) * 5 / 9 },
-      m:    { ft: (v) => v * 3.28084 },
-      ft:   { m: (v) => v * 0.3048 },
-      l:    { gal: (v) => v * 0.264172 },
-      gal:  { l: (v) => v * 3.78541 },
-      cm:   { in: (v) => v * 0.393701 },
-      in:   { cm: (v) => v * 2.54 },
-      oz:   { g: (v) => v * 28.3495 },
-      g:    { oz: (v) => v * 0.035274 },
-      mph:  { kmh: (v) => v * 1.60934 },
-      kmh:  { mph: (v) => v * 0.621371 },
-    };
-
-    const fromNorm = normalize(from);
-    const toNorm = normalize(to);
-
-    if (!fromNorm || !toNorm) {
-      return { content: [{ type: "text", text: `❌ Unrecognized unit: "${!fromNorm ? from : to}". Supported: km, miles, kg, lbs, celsius, fahrenheit, m, ft, l, gal, cm, in, oz, g, mph, kmh.` }] };
-    }
-
-    if (fromNorm === toNorm) {
-      return { content: [{ type: "text", text: `${value} ${from} = ${value} ${to} (same unit!)` }] };
-    }
-
-    const fn = conversions[fromNorm]?.[toNorm];
-    if (!fn) {
-      return { content: [{ type: "text", text: `❌ Cannot convert ${from} → ${to}. Supported pairs: km↔miles, kg↔lbs, °C↔°F, m↔ft, L↔gal, cm↔in, oz↔g, mph↔km/h.` }] };
-    }
-
-    const result = fn(value);
-    return {
-      content: [{
-        type: "text",
-        text: [
-          `## 🔄 Unit Conversion`,
-          "",
-          `**${value} ${from}** = **${result.toFixed(4)} ${to}**`,
-          "",
-          `*Rounded: ${Math.round(result * 100) / 100} ${to}*`,
-        ].join("\n"),
-      }],
-    };
-  }
-);
-
-// ─── Tool 11: Web Search (DuckDuckGo Instant Answer API) ──
+// ─── Tool 9: Web Search (DuckDuckGo Instant Answer API) ──
 // FALLBACK tool: use this when the user's query doesn't match any
 // specific tool above. Searches the web using DuckDuckGo's free
 // Instant Answer API which provides answers from Wikipedia,
@@ -909,7 +836,7 @@ server.tool(
 
 server.tool(
   "web_search",
-  "Search the web for general information. Use this as a FALLBACK when no other tool (stocks, weather, calculator, currency, news, dictionary, wikipedia, time, units) matches the user's query. Returns instant answers from DuckDuckGo powered by Wikipedia, Stack Overflow, MDN, and other sources.",
+  "Search the web for general information. Use this as a FALLBACK when no other tool (stocks, weather, calculator, currency, dictionary, wikipedia, time) matches the user's query. Returns instant answers from DuckDuckGo powered by Wikipedia, Stack Overflow, MDN, and other sources.",
   {
     query: z.string().describe("The search query to look up on the web"),
   },
