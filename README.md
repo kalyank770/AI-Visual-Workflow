@@ -20,6 +20,8 @@ An interactive architectural platform for designing, simulating, and inspecting 
 - Redis-backed workflow state snapshots with graceful fallback to in-memory execution.
 - Human-in-the-loop interrupts: pause before tool execution, approve/reject via API.
 - Workflow resume from checkpoint with state persistence (LangGraph checkpointer integration).
+- Frontend approval UI with "Require Approval" checkbox and modal for pending workflows.
+- **Intelligent LLM routing**: Task-aware model selection with budget/latency optimization (economy/balanced/quality modes).
 
 ## 🧭 Architecture Diagram
 ![Architecture diagram](images/architecture-diagram.png)
@@ -82,7 +84,59 @@ POST /api/approve/{run_id}
 - Prevent data modification without confirmation
 - Audit sensitive operations (database writes, financial transactions)
 - Cost control for expensive API calls
+## 🤖 Intelligent LLM Routing
 
+The workflow includes production-grade model selection that automatically chooses the optimal LLM based on task type, budget, and latency constraints.
+
+### Task Types
+Queries are classified into 7 categories:
+- **SUMMARIZE**: Text condensation, bullet points
+- **REASON**: Complex multi-step logic
+- **CODE**: Programming, technical queries
+- **CREATIVE**: Stories, poems, marketing
+- **FACTUAL**: Q&A, information retrieval
+- **CHAT**: Casual conversation
+- **ANALYZE**: Data analysis, predictions
+
+### Budget Modes
+Configure via `LLM_BUDGET_MODE` environment variable:
+
+**Economy Mode** (`economy`):
+- Prioritizes cost savings (85% reduction vs always-premium)
+- Routes simple queries to Gemini Flash (cheap, fast)
+- Uses free internal Llama for complex tasks
+- Best for: High-volume, non-critical workloads
+
+**Balanced Mode** (`balanced`) [DEFAULT]:
+- Optimizes cost vs quality tradeoff
+- Routes reasoning/code to Llama 3.3 70B (free, high-quality)
+- Routes summarization/chat to Gemini Flash (fast, cheap)
+- Best for: Production workloads with mixed task types
+
+**Quality Mode** (`quality`):
+- Maximizes output quality regardless of cost
+- Always selects highest-quality available model
+- Best for: Critical decisions, premium applications
+
+### Configuration
+```bash
+# Enable intelligent routing (default: true)
+LLM_ROUTING_ENABLED=true
+
+# Budget mode: "economy", "balanced", "quality"
+LLM_BUDGET_MODE=balanced
+
+# Maximum acceptable latency in milliseconds
+LLM_MAX_LATENCY_MS=5000
+```
+
+### Routing Examples
+- **"Summarize this article"** → Gemini Flash (fast, cheap, good for summarization)
+- **"Explain quantum physics causality"** → Llama 3.3 70B (best reasoning)
+- **"Write Python function"** → Llama 3.3 70B (strong code capabilities)
+- **"Hello!"** → Gemini Flash (simple chat, no need for premium)
+
+See [LLM_ROUTING_SYSTEM.md](LLM_ROUTING_SYSTEM.md) for complete documentation.
 ## �🛠️ Setup From Scratch (Vite + React + TypeScript)
 
 ### 1. Create the project

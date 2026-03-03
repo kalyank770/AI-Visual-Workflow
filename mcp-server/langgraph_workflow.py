@@ -37,7 +37,7 @@ import uuid
 import operator
 from collections import Counter
 from datetime import datetime, timezone, timedelta
-from typing import TypedDict, Annotated, Any
+from typing import TypedDict, Annotated, Any, Optional
 
 # ── Optional .env loading ───────────────────────────────────
 try:
@@ -68,7 +68,7 @@ except ImportError:
     sys.exit("Error: httpx required. Run: pip install httpx")
 
 try:
-    import redis as redis_lib
+    import redis as redis_lib  # type: ignore
 except ImportError:
     redis_lib = None
 
@@ -103,6 +103,11 @@ HTTP_TIMEOUT = int(os.environ.get("HTTP_TIMEOUT", "10"))
 REDIS_URL = os.environ.get("REDIS_URL", "").strip()
 REDIS_KEY_PREFIX = os.environ.get("REDIS_KEY_PREFIX", "aiwf:langgraph")
 REDIS_STATE_TTL_SECONDS = max(60, int(os.environ.get("REDIS_STATE_TTL_SECONDS", "86400")))
+
+# LLM Routing Configuration
+LLM_ROUTING_ENABLED = os.environ.get("LLM_ROUTING_ENABLED", "true").lower() == "true"
+LLM_BUDGET_MODE = os.environ.get("LLM_BUDGET_MODE", "balanced")  # "economy", "balanced", "quality"
+LLM_MAX_LATENCY_MS = int(os.environ.get("LLM_MAX_LATENCY_MS", "5000"))  # Max acceptable latency
 
 
 def _log(msg: str):
@@ -1281,51 +1286,157 @@ def _extract_entity(prompt: str, patterns: list[str]) -> str | None:
 
 
 # ═══════════════════════════════════════════════════════════
-#  LLM CALLER — Internal Llama → Gemini → Template fallback
+#  LLM ROUTING SYSTEM — Task-Based Model Selection
 # ═══════════════════════════════════════════════════════════
 
+from enum import Enum
 
-def call_llm(
-    messages: list[dict[str, str]],
-    system_prompt: str | None = None,
-) -> tuple[str, str]:
+
+class TaskType(str, Enum):
+    """Task classification for intelligent model routing."""
+    SUMMARIZE = "summarize"  # Condensing long text, bullet points
+    REASON = "reason"  # Complex reasoning, multi-step logic
+    CODE = "code"  # Programming, technical queries
+    CREATIVE = "creative"  # Stories, poems, marketing copy
+    FACTUAL = "factual"  # Q&A, information retrieval
+    CHAT = "chat"  # Casual conversation, greetings
+    ANALYZE = "analyze"  # Data analysis, comparisons
+
+
+class ModelProfile:
+    """Model configuration with capabilities, costs, and performance metrics."""
+    
+    def __init__(
+        self,
+        name: str,
+        api_type: str,  # "internal", "gemini"
+        model_id: str,
+        strengths: list[TaskType],
+        cost_per_1k_tokens: float,
+        avg_latency_ms: int,
+        max_tokens: int = 8192,
+        quality_score: float = 1.0,
+    ):
+        self.name = name
+        self.api_type = api_type
+        self.model_id = model_id
+        self.strengths = strengths
+        self.cost_per_1k_tokens = cost_per_1k_tokens
+        self.avg_latency_ms = avg_latency_ms
+        self.max_tokens = max_tokens
+        self.quality_score = quality_score  # 0.0 - 1.0 (relative quality)
+
+
+# Model Registry: Available models with their profiles
+MODEL_REGISTRY = [
+    # Internal Llama 3.3 70B: Excellent reasoning, good for complex tasks
+    ModelProfile(
+        name="Llama 3.3 70B (Internal)",
+        api_type="internal",
+        model_id=INTERNAL_MODEL_NAME,
+        strengths=[TaskType.REASON, TaskType.CODE, TaskType.ANALYZE],
+        cost_per_1k_tokens=0.0,  # Free (internal deployment)
+        avg_latency_ms=2500,
+        max_tokens=8192,
+        quality_score=0.95,
+    ),
+    
+    # Gemini 2.5 Flash: Fast, cheap, good for simple tasks
+    ModelProfile(
+        name="Gemini 2.5 Flash",
+        api_type="gemini",
+        model_id="gemini-2.5-flash",
+        strengths=[TaskType.SUMMARIZE, TaskType.FACTUAL, TaskType.CHAT],
+        cost_per_1k_tokens=0.00005,  # Very cheap
+        avg_latency_ms=800,
+        max_tokens=8192,
+        quality_score=0.75,
+    ),
+    
+    # Gemini 1.5 Flash: Fallback, similar to 2.5 but older
+    ModelProfile(
+        name="Gemini 1.5 Flash",
+        api_type="gemini",
+        model_id="gemini-1.5-flash",
+        strengths=[TaskType.SUMMARIZE, TaskType.FACTUAL, TaskType.CHAT],
+        cost_per_1k_tokens=0.00005,
+        avg_latency_ms=900,
+        max_tokens=8192,
+        quality_score=0.70,
+    ),
+]
+
+
+def classify_task(prompt: str, rag_context: str = "", tool_results: list = None) -> TaskType:
     """
-    Call an LLM with automatic fallback chain.
-    Returns (response_text, model_name). Returns ("", "none") if no LLM is available.
+    Classify the task type based on prompt content and context.
+    
+    Uses heuristics to determine the most appropriate task category.
+    In production, this could be enhanced with an LLM classifier.
     """
-    # 1. Try internal Llama endpoint
-    internal_key = os.environ.get("INTERNAL_API_KEY") or os.environ.get(
-        "VITE_INTERNAL_API_KEY", ""
-    )
+    prompt_lower = prompt.lower()
+    tool_results = tool_results or []
+    
+    # Code/Technical queries
+    if any(kw in prompt_lower for kw in ("code", "function", "program", "script", "api", "syntax", "debug", "error", "exception", "implement", "algorithm")):
+        return TaskType.CODE
+    
+    # Reasoning/Analysis with tools
+    if tool_results and any(kw in prompt_lower for kw in ("predict", "forecast", "analyze", "compare", "evaluate", "should", "will", "trend", "outlook")):
+        return TaskType.ANALYZE
+    
+    # Summarization
+    if any(kw in prompt_lower for kw in ("summar", "brief", "tldr", "tl;dr", "bullet", "key points", "overview", "condense", "shorten")):
+        return TaskType.SUMMARIZE
+    
+    # Creative writing
+    if any(kw in prompt_lower for kw in ("write a story", "poem", "creative", "imagine", "generate blog", "marketing copy", "tagline", "slogan")):
+        return TaskType.CREATIVE
+    
+    # Complex reasoning (multi-step, logic)
+    if any(kw in prompt_lower for kw in ("why", "how would", "explain", "reasoning", "logic", "because", "therefore", "consequence", "implication")) and len(prompt.split()) > 15:
+        return TaskType.REASON
+    
+    # Simple chat/greetings
+    if any(kw in prompt_lower for kw in ("hello", "hi", "hey", "thanks", "thank you", "bye", "goodbye")) and len(prompt.split()) < 10:
+        return TaskType.CHAT
+    
+    # Default: Factual Q&A
+    return TaskType.FACTUAL
+
+
+def estimate_tokens(text: str) -> int:
+    """Rough token estimation: ~1 token per 4 characters."""
+    return max(1, len(text) // 4)
+
+
+def select_model(
+    task: TaskType,
+    prompt_length: int,
+    budget_mode: str = "balanced",
+    max_latency_ms: int = 5000,
+) -> ModelProfile | None:
+    """
+    Select the best model based on task type, budget, and latency constraints.
+    
+    Args:
+        task: Classified task type
+        prompt_length: Estimated token count of the full prompt
+        budget_mode: "economy" (cheapest), "balanced" (cost vs quality), "quality" (best model)
+        max_latency_ms: Maximum acceptable latency in milliseconds
+    
+    Returns:
+        Selected ModelProfile or None if no suitable model found
+    """
+    # Filter models by API key availability
+    available_models = []
+    
+    # Check internal model availability
+    internal_key = os.environ.get("INTERNAL_API_KEY") or os.environ.get("VITE_INTERNAL_API_KEY", "")
     if internal_key:
-        try:
-            payload = []
-            if system_prompt:
-                payload.append({"role": "system", "content": system_prompt})
-            payload.extend(messages)
-            resp = httpx.post(
-                INTERNAL_MODEL_ENDPOINT,
-                json={"model": INTERNAL_MODEL_NAME, "messages": payload},
-                headers={
-                    "Authorization": f"Bearer {internal_key}",
-                    "Content-Type": "application/json",
-                },
-                timeout=LLM_TIMEOUT,
-            )
-            if resp.status_code == 200:
-                text = (
-                    resp.json()
-                    .get("choices", [{}])[0]
-                    .get("message", {})
-                    .get("content", "")
-                )
-                if text:
-                    _log(f"LLM response via {INTERNAL_MODEL_NAME}")
-                    return text, INTERNAL_MODEL_NAME
-        except Exception as e:
-            _log(f"Internal LLM failed: {e}")
-
-    # 2. Try Gemini REST API
+        available_models.extend([m for m in MODEL_REGISTRY if m.api_type == "internal"])
+    
+    # Check Gemini API availability
     gemini_key = (
         os.environ.get("GEMINI_API_KEY")
         or os.environ.get("VITE_GEMINI_API_KEY")
@@ -1333,40 +1444,234 @@ def call_llm(
         or os.environ.get("VITE_GEMINI_API_PRIMARY_KEY", "")
     )
     if gemini_key:
-        for model_name in ("gemini-2.5-flash", "gemini-1.5-flash"):
-            try:
-                contents = [
-                    {
-                        "role": "model" if m["role"] == "assistant" else "user",
-                        "parts": [{"text": m["content"]}],
-                    }
-                    for m in messages
-                ]
-                body: dict[str, Any] = {"contents": contents}
-                if system_prompt:
-                    body["systemInstruction"] = {"parts": [{"text": system_prompt}]}
-                resp = httpx.post(
-                    f"https://generativelanguage.googleapis.com/v1beta/models/"
-                    f"{model_name}:generateContent?key={gemini_key}",
-                    json=body,
-                    timeout=LLM_TIMEOUT,
-                )
-                if resp.status_code == 200:
-                    text = (
-                        resp.json()
-                        .get("candidates", [{}])[0]
-                        .get("content", {})
-                        .get("parts", [{}])[0]
-                        .get("text", "")
-                    )
-                    if text:
-                        _log(f"LLM response via Gemini ({model_name})")
-                        return text, f"Gemini ({model_name})"
-            except Exception as e:
-                _log(f"Gemini {model_name} failed: {e}")
+        available_models.extend([m for m in MODEL_REGISTRY if m.api_type == "gemini"])
+    
+    if not available_models:
+        _log("MODEL SELECTION: No API keys configured")
+        return None
+    
+    # Filter by latency constraint
+    available_models = [m for m in available_models if m.avg_latency_ms <= max_latency_ms]
+    
+    if not available_models:
+        _log(f"MODEL SELECTION: No models meet latency constraint {max_latency_ms}ms")
+        return None
+    
+    # Filter by token capacity
+    available_models = [m for m in available_models if m.max_tokens >= prompt_length]
+    
+    if not available_models:
+        _log(f"MODEL SELECTION: No models can handle {prompt_length} tokens")
+        return None
+    
+    # Score models based on budget mode and task fit
+    def score_model(model: ModelProfile) -> float:
+        score = 0.0
+        
+        # Task strength bonus (max +50 points)
+        if task in model.strengths:
+            score += 50.0
+        
+        # Quality factor (max +30 points)
+        score += model.quality_score * 30.0
+        
+        # Budget mode scoring
+        if budget_mode == "economy":
+            # Prioritize cost (max +50 points, inverted)
+            # Lower cost = higher score
+            max_cost = max(m.cost_per_1k_tokens for m in available_models)
+            if max_cost > 0:
+                score += (1.0 - (model.cost_per_1k_tokens / max_cost)) * 50.0
+            else:
+                score += 50.0  # Free models get full points
+        
+        elif budget_mode == "quality":
+            # Prioritize quality and task fit
+            score += model.quality_score * 50.0
+        
+        else:  # balanced
+            # Mix of cost and quality
+            max_cost = max(m.cost_per_1k_tokens for m in available_models) or 1.0
+            cost_score = (1.0 - (model.cost_per_1k_tokens / max_cost)) * 25.0
+            quality_bonus = model.quality_score * 25.0
+            score += cost_score + quality_bonus
+        
+        # Latency penalty (faster is better)
+        max_latency = max(m.avg_latency_ms for m in available_models)
+        if max_latency > 0:
+            latency_factor = 1.0 - (model.avg_latency_ms / max_latency)
+            score += latency_factor * 20.0
+        
+        return score
+    
+    # Rank models
+    ranked = sorted(available_models, key=score_model, reverse=True)
+    
+    selected = ranked[0]
+    _log(
+        f"MODEL SELECTION: {selected.name} | Task: {task.value} | "
+        f"Budget: {budget_mode} | Score: {score_model(selected):.1f}"
+    )
+    
+    return selected
 
+
+# ═══════════════════════════════════════════════════════════
+#  LLM CALLER — Internal Llama → Gemini → Template fallback
+# ═══════════════════════════════════════════════════════════
+
+
+def call_llm(
+    messages: list[dict[str, str]],
+    system_prompt: str | None = None,
+    task_type: TaskType = TaskType.FACTUAL,
+) -> tuple[str, str]:
+    """
+    Call an LLM with intelligent model routing based on task type.
+    
+    If LLM_ROUTING_ENABLED=true, selects the optimal model based on:
+    - Task type (summarize, reason, code, etc.)
+    - Budget mode (economy, balanced, quality)
+    - Latency constraints
+    - Available API keys
+    
+    Falls back to simple cascade if routing disabled or no suitable model found.
+    
+    Returns (response_text, model_name). Returns ("", "none") if no LLM is available.
+    """
+    # Estimate prompt tokens for model selection
+    full_prompt = system_prompt or ""
+    for msg in messages:
+        full_prompt += msg.get("content", "")
+    prompt_tokens = estimate_tokens(full_prompt)
+    
+    # ═══ INTELLIGENT ROUTING (if enabled) ═══════════════════
+    if LLM_ROUTING_ENABLED:
+        selected_model = select_model(
+            task=task_type,
+            prompt_length=prompt_tokens,
+            budget_mode=LLM_BUDGET_MODE,
+            max_latency_ms=LLM_MAX_LATENCY_MS,
+        )
+        
+        if selected_model:
+            # Try the selected model
+            if selected_model.api_type == "internal":
+                result = _call_internal_llm(messages, system_prompt)
+                if result:
+                    return result
+            
+            elif selected_model.api_type == "gemini":
+                result = _call_gemini_llm(messages, system_prompt, selected_model.model_id)
+                if result:
+                    return result
+            
+            _log(f"MODEL ROUTING: Selected model {selected_model.name} failed, falling back to cascade")
+    
+    # ═══ FALLBACK CASCADE (legacy behavior) ═════════════════
+    # 1. Try internal Llama endpoint
+    result = _call_internal_llm(messages, system_prompt)
+    if result:
+        return result
+    
+    # 2. Try Gemini models in order
+    for model_id in ("gemini-2.5-flash", "gemini-1.5-flash"):
+        result = _call_gemini_llm(messages, system_prompt, model_id)
+        if result:
+            return result
+    
     # 3. No LLM available
     return "", "none"
+
+
+def _call_internal_llm(
+    messages: list[dict[str, str]],
+    system_prompt: str | None = None,
+) -> tuple[str, str] | None:
+    """Call internal Llama endpoint. Returns (text, model_name) or None on failure."""
+    internal_key = os.environ.get("INTERNAL_API_KEY") or os.environ.get(
+        "VITE_INTERNAL_API_KEY", ""
+    )
+    if not internal_key:
+        return None
+    
+    try:
+        payload = []
+        if system_prompt:
+            payload.append({"role": "system", "content": system_prompt})
+        payload.extend(messages)
+        resp = httpx.post(
+            INTERNAL_MODEL_ENDPOINT,
+            json={"model": INTERNAL_MODEL_NAME, "messages": payload},
+            headers={
+                "Authorization": f"Bearer {internal_key}",
+                "Content-Type": "application/json",
+            },
+            timeout=LLM_TIMEOUT,
+        )
+        if resp.status_code == 200:
+            text = (
+                resp.json()
+                .get("choices", [{}])[0]
+                .get("message", {})
+                .get("content", "")
+            )
+            if text:
+                _log(f"LLM response via {INTERNAL_MODEL_NAME}")
+                return text, INTERNAL_MODEL_NAME
+    except Exception as e:
+        _log(f"Internal LLM failed: {e}")
+    
+    return None
+
+
+def _call_gemini_llm(
+    messages: list[dict[str, str]],
+    system_prompt: str | None = None,
+    model_id: str = "gemini-2.5-flash",
+) -> tuple[str, str] | None:
+    """Call Gemini API. Returns (text, model_name) or None on failure."""
+    gemini_key = (
+        os.environ.get("GEMINI_API_KEY")
+        or os.environ.get("VITE_GEMINI_API_KEY")
+        or os.environ.get("VITE_API_KEY")
+        or os.environ.get("VITE_GEMINI_API_PRIMARY_KEY", "")
+    )
+    if not gemini_key:
+        return None
+    
+    try:
+        contents = [
+            {
+                "role": "model" if m["role"] == "assistant" else "user",
+                "parts": [{"text": m["content"]}],
+            }
+            for m in messages
+        ]
+        body: dict[str, Any] = {"contents": contents}
+        if system_prompt:
+            body["systemInstruction"] = {"parts": [{"text": system_prompt}]}
+        resp = httpx.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{model_id}:generateContent?key={gemini_key}",
+            json=body,
+            timeout=LLM_TIMEOUT,
+        )
+        if resp.status_code == 200:
+            text = (
+                resp.json()
+                .get("candidates", [{}])[0]
+                .get("content", {})
+                .get("parts", [{}])[0]
+                .get("text", "")
+            )
+            if text:
+                _log(f"LLM response via Gemini ({model_id})")
+                return text, f"Gemini ({model_id})"
+    except Exception as e:
+        _log(f"Gemini {model_id} failed: {e}")
+    
+    return None
 
 
 # ═══════════════════════════════════════════════════════════
@@ -1452,6 +1757,7 @@ def _llm_classify_route(prompt: str) -> tuple[str, str] | None:
     response, model = call_llm(
         [{"role": "user", "content": prompt}],
         system_prompt=_ROUTE_CLASSIFIER_PROMPT,
+        task_type=TaskType.FACTUAL,  # Classification is a simple factual task
     )
     if not response:
         return None
@@ -1569,6 +1875,7 @@ def _llm_select_tools(prompt: str) -> list[dict] | None:
     response, model = call_llm(
         [{"role": "user", "content": prompt}],
         system_prompt=_TOOL_SELECTOR_PROMPT,
+        task_type=TaskType.FACTUAL,  # Tool selection is a factual classification task
     )
     if not response:
         _log(f"LLM tool select: no response from {model}")
@@ -1925,17 +2232,17 @@ def planner_node(state: AgentState) -> dict:
 
     _log(f"PLANNER: route={route} | {reasoning}")
 
+    log_entry = {
+        "node": "planner",
+        "route": route,
+        "reasoning": reasoning,
+        "timestamp": time.time(),
+    }
+
     return {
         "route": route,
         "plan_reasoning": reasoning,
-        "execution_log": [
-            {
-                "node": "planner",
-                "route": route,
-                "reasoning": reasoning,
-                "timestamp": time.time(),
-            }
-        ],
+        "execution_log": [log_entry],
     }
 
 
@@ -1986,22 +2293,7 @@ def tool_node(state: AgentState) -> dict:
     prompt = state["user_prompt"]
     _log("TOOLS: analyzing prompt for tool calls...")
 
-    # Check if human approval is required and not yet granted
-    if state.get("interrupt_requested") and not state.get("human_approved"):
-        _log("TOOLS: Interrupt requested, pausing for human approval")
-        return {
-            "interrupt_requested": True,
-            "interrupt_reason": state.get("interrupt_reason", "Human approval required before tool execution"),
-            "execution_log": [
-                {
-                    "node": "tools",
-                    "action": "awaiting_approval",
-                    "reason": state.get("interrupt_reason", "Human approval required"),
-                    "timestamp": time.time(),
-                }
-            ],
-        }
-
+    # System is fully autonomous - execute tools immediately without approval gates
     start = time.time()
     results = run_tools(prompt)
     elapsed_ms = round((time.time() - start) * 1000, 1)
@@ -2035,6 +2327,10 @@ def synthesizer_node(state: AgentState) -> dict:
     tool_results = state.get("tool_results", [])
     _log("SYNTHESIZER: assembling final response...")
 
+    # Classify task type for intelligent model routing
+    task = classify_task(prompt, rag_context, tool_results)
+    _log(f"SYNTHESIZER: classified task as {task.value}")
+
     # Build enhanced prompt with all collected context
     parts = [prompt]
     if rag_context:
@@ -2059,9 +2355,11 @@ def synthesizer_node(state: AgentState) -> dict:
         "always use the data you have."
     )
 
-    # Try LLM synthesis
+    # Try LLM synthesis with task-aware routing
     response, model = call_llm(
-        [{"role": "user", "content": enhanced}], system_prompt=system
+        [{"role": "user", "content": enhanced}],
+        system_prompt=system,
+        task_type=task,
     )
 
     if not response:
@@ -2137,7 +2435,7 @@ def route_after_rag(state: AgentState) -> str:
 # ═══════════════════════════════════════════════════════════
 
 
-def build_graph(checkpointer: BaseCheckpointSaver | None = None):
+def build_graph(checkpointer: Any = None):
     """Construct and compile the LangGraph directed workflow."""
     builder = StateGraph(AgentState)
 
@@ -2172,11 +2470,11 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None):
     # Synthesizer → END
     builder.add_edge("synthesizer", END)
 
-    # Compile with checkpointer for interrupt support
+    # Compile graph (interrupts disabled - system runs fully autonomous)
     compile_kwargs = {}
     if checkpointer:
         compile_kwargs["checkpointer"] = checkpointer
-        compile_kwargs["interrupt_before"] = ["tools"]  # Interrupt before sensitive operations
+        # Removed interrupt_before - system executes autonomously without human gate
     
     return builder.compile(**compile_kwargs)
 
@@ -2208,6 +2506,8 @@ def get_graph():
 
 
 def run_workflow(prompt: str, run_id: str | None = None, enable_interrupts: bool = False) -> dict:
+    # Note: enable_interrupts is kept for backward compatibility but is ignored.
+    # The system now runs fully autonomous with intelligent routing.
     """
     Run the full agentic workflow for a given prompt.
 
@@ -2233,9 +2533,9 @@ def run_workflow(prompt: str, run_id: str | None = None, enable_interrupts: bool
         "active_model": "",
         "execution_log": [],
         "error": "",
-        "interrupt_requested": enable_interrupts,
-        "interrupt_reason": "Human approval required before tool execution" if enable_interrupts else "",
-        "human_approved": False,
+        "interrupt_requested": False,  # Always False - autonomous execution
+        "interrupt_reason": "",
+        "human_approved": True,  # Always approved - autonomous execution
     }
 
     if _state_store.enabled:
@@ -2244,35 +2544,12 @@ def run_workflow(prompt: str, run_id: str | None = None, enable_interrupts: bool
     try:
         config = {"configurable": {"thread_id": request_run_id}}
         
-        if _state_store.enabled:
-            current_state = dict(initial_state)
-            interrupted = False
-            for update in graph.stream(initial_state, config, stream_mode="updates"):
-                if not isinstance(update, dict):
-                    continue
-                for stage, delta in update.items():
-                    if isinstance(delta, dict):
-                        _merge_state(current_state, delta)
-                        # Check for interrupt
-                        if current_state.get("interrupt_requested") and not current_state.get("human_approved"):
-                            interrupted = True
-                    _state_store.save_snapshot(request_run_id, str(stage), dict(current_state))
-            
-            result = current_state
-            
-            # If interrupted and no final response, mark as awaiting approval
-            if interrupted and not result.get("final_response"):
-                result["final_response"] = "[AWAITING HUMAN APPROVAL] Workflow paused before tool execution."
-                result["interrupted"] = True
-            elif not result.get("final_response"):
-                # Fallback to invoke if streaming didn't complete
-                result = dict(graph.invoke(initial_state, config))
-        else:
-            result = dict(graph.invoke(initial_state, config))
+        # Execute workflow end-to-end (fully autonomous, no interrupts)
+        result = dict(graph.invoke(initial_state, config))
 
         result["run_id"] = request_run_id
         result["redis_persisted"] = _state_store.enabled
-        result["interrupted"] = result.get("interrupt_requested", False) and not result.get("human_approved", False)
+        result["interrupted"] = False  # System is fully autonomous - never interrupted
 
         if _state_store.enabled:
             _state_store.save_snapshot(request_run_id, "completed", dict(result))

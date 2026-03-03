@@ -72,6 +72,12 @@ const App: React.FC = () => {
   const [pathOutputView, setPathOutputView] = useState<{ prompt: string; output: string } | null>(null);
   const [isDarkMode, setIsDarkMode] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [enableInterrupts, setEnableInterrupts] = useState(false);
+  const [pendingWorkflow, setPendingWorkflow] = useState<{
+    run_id: string;
+    prompt: string;
+    execution_log: any[];
+  } | null>(null);
   const hasKeys = useMemo(() => hasAnyApiKeys(), []);
   const componentSubtitles: Record<string, string> = {
     LG: 'Decision Engine',
@@ -474,6 +480,81 @@ const App: React.FC = () => {
     setIsSimulating(true);
     setIsPaused(false);
     setActiveModelName("llama-3.3-70b");
+    
+    // ═══ Backend API Mode (Always - System is Fully Autonomous) ═══════════════
+    // The system now always uses intelligent backend routing without approval gates.
+    // This ensures precision, accuracy, and intelligent task-based model selection.
+    try {
+      setState(prev => ({
+        ...prev,
+        logs: [
+          ...prev.logs,
+          {
+            id: `api_call_${Date.now()}`,
+            type: 'SYSTEM',
+            message: 'Calling Backend Workflow API',
+            timestamp: new Date().toLocaleTimeString(),
+            details: `Query: "${activePrompt}" | Mode: Autonomous (no approvals)`,
+          },
+        ],
+      }));
+
+      const response = await fetch('http://localhost:5001/api/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: activePrompt,
+          enable_interrupts: false,  // Always disabled for autonomous execution
+          verbose: false,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`API error: ${response.status} ${response.statusText}`);
+      }
+
+      const result = await response.json();
+
+      // Workflow always completes (no interrupts)
+      setState(prev => ({
+        ...prev,
+        currentStep: WorkflowStep.COMPLETED,
+        finalOutput: result.final_response,
+        logs: [
+          ...prev.logs,
+          {
+            id: `completed_${Date.now()}`,
+            type: 'SYSTEM',
+            message: 'Workflow Completed',
+            timestamp: new Date().toLocaleTimeString(),
+            details: `Route: ${result.route || 'unknown'} | Model: ${result.active_model || 'unknown'}`,
+          },
+        ],
+      }));
+
+      setActiveModelName(result.active_model || 'Backend API');
+      setIsSimulating(false);
+      setPrompt('');
+      return;
+    } catch (error) {
+      console.error('Backend API call failed:', error);
+      setState(prev => ({
+        ...prev,
+        logs: [
+          ...prev.logs,
+          {
+            id: `api_error_${Date.now()}`,
+            type: 'SYSTEM',
+            message: 'API Call Failed',
+            timestamp: new Date().toLocaleTimeString(),
+            details: `${error}. Falling back to local simulation.`,
+          },
+        ],
+      }));
+      // Fall through to local simulation
+    }
+    
+    // ═══ Local Frontend Simulation Mode ═══════════════════════════
     // Removed auto-expansion of telemetry to keep it collapsed by default per user request
     // setIsTelemetryCollapsed(false); 
 
@@ -835,6 +916,80 @@ const App: React.FC = () => {
     setLoadingInsight(false);
   };
 
+  const handleApproveWorkflow = async (approved: boolean, reason?: string) => {
+    if (!pendingWorkflow) return;
+
+    try {
+      const response = await fetch(`http://localhost:5001/api/approve/${pendingWorkflow.run_id}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ approved, reason: reason || (approved ? 'User approved' : 'User declined') }),
+      });
+
+      const result = await response.json();
+
+      if (result.status === 'resumed' && result.result) {
+        // Workflow completed successfully
+        setState(prev => ({
+          ...prev,
+          finalOutput: result.result.final_response,
+          logs: [
+            ...prev.logs,
+            {
+              id: `approval_${Date.now()}`,
+              type: 'SYSTEM',
+              message: approved ? 'Workflow Approved & Resumed' : 'Workflow Rejected',
+              timestamp: new Date().toLocaleTimeString(),
+              details: result.message,
+            },
+          ],
+        }));
+
+        if (result.result.final_response) {
+          setPathHistory(prev => {
+            if (prev.length === 0) return prev;
+            const updated = [...prev];
+            updated[0] = { ...updated[0], output: result.result.final_response };
+            return updated;
+          });
+        }
+      } else if (result.status === 'rejected') {
+        setState(prev => ({
+          ...prev,
+          finalOutput: result.result?.final_response || '[REJECTED] User declined workflow execution',
+          logs: [
+            ...prev.logs,
+            {
+              id: `rejection_${Date.now()}`,
+              type: 'SYSTEM',
+              message: 'Workflow Rejected',
+              timestamp: new Date().toLocaleTimeString(),
+              details: result.message,
+            },
+          ],
+        }));
+      }
+    } catch (error) {
+      console.error('Approval failed:', error);
+      setState(prev => ({
+        ...prev,
+        logs: [
+          ...prev.logs,
+          {
+            id: `approval_error_${Date.now()}`,
+            type: 'SYSTEM',
+            message: 'Approval Failed',
+            timestamp: new Date().toLocaleTimeString(),
+            details: `Error: ${error}`,
+          },
+        ],
+      }));
+    } finally {
+      setPendingWorkflow(null);
+      setIsSimulating(false);
+    }
+  };
+
   return (
     <div className={`flex flex-col h-screen ${isDarkMode ? 'bg-[#020617] text-slate-200' : 'bg-slate-50 text-slate-700'} overflow-hidden font-sans selection:bg-blue-500/30`}>
       <header className={`flex justify-between items-center px-10 py-6 border-b ${isDarkMode ? 'border-slate-800/50 bg-[#080c14]/90' : 'border-slate-200 bg-white/90'} backdrop-blur-2xl shrink-0 z-20`}>
@@ -874,6 +1029,8 @@ const App: React.FC = () => {
             placeholder="Describe your agentic objective..."
             className={`${isDarkMode ? 'bg-slate-900/60 border-slate-800/80 placeholder:text-slate-700 text-slate-200' : 'bg-white border-slate-200 placeholder:text-slate-400 text-slate-800'} border px-6 py-3 rounded-2xl w-[300px] text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/30 transition-all shadow-lg disabled:opacity-50`}
           />
+          
+          {/* Require Approval checkbox hidden - System is fully autonomous */}
           
           <div className="flex gap-2">
             {isSimulating ? (
@@ -1061,6 +1218,94 @@ const App: React.FC = () => {
                    >
                       Initialize This Pattern
                    </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Approval Modal Hidden - System is fully autonomous (no human interactions) */}
+          {false && pendingWorkflow && (
+            <div className={`fixed inset-0 ${isDarkMode ? 'bg-[#020617]/80' : 'bg-slate-200/60'} backdrop-blur-2xl z-[400] flex items-center justify-center p-6 md:p-12 animate-in fade-in duration-300`}>
+              <div className={`w-full max-w-3xl ${isDarkMode ? 'bg-[#0b1120]' : 'bg-white'} border border-amber-500/40 rounded-[2.5rem] shadow-[0_0_120px_rgba(245,158,11,0.3)] p-8 md:p-12 relative overflow-hidden`}>
+                <div className="absolute top-0 left-0 w-full h-1.5 bg-gradient-to-r from-amber-600 via-orange-500 to-red-500" />
+                
+                <div className="flex items-start gap-4 mb-8">
+                  <div className="p-4 bg-amber-500/10 border border-amber-500/30 rounded-2xl">
+                    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-amber-400">
+                      <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+                      <line x1="12" y1="9" x2="12" y2="13"/>
+                      <line x1="12" y1="17" x2="12.01" y2="17"/>
+                    </svg>
+                  </div>
+                  <div className="flex-1">
+                    <h3 className="text-2xl font-black uppercase tracking-wide text-amber-400 mb-2">Human Approval Required</h3>
+                    <p className={`text-sm ${isDarkMode ? 'text-slate-300' : 'text-slate-700'} leading-relaxed`}>
+                      The workflow is requesting permission to execute external tools. Review the pending operations below and approve or reject.
+                    </p>
+                  </div>
+                </div>
+
+                <div className={`${isDarkMode ? 'bg-slate-900/50 border-slate-800' : 'bg-slate-50 border-slate-200'} border rounded-2xl p-6 mb-6`}>
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className="px-3 py-1.5 bg-blue-500/10 border border-blue-500/30 rounded-lg">
+                      <span className="text-xs font-bold text-blue-400 uppercase tracking-wider">Query</span>
+                    </div>
+                    <span className={`text-sm font-medium ${isDarkMode ? 'text-slate-300' : 'text-slate-700'}`}>{pendingWorkflow.prompt}</span>
+                  </div>
+                  
+                  <div className="space-y-3">
+                    <h4 className={`text-xs font-black uppercase tracking-widest ${isDarkMode ? 'text-slate-500' : 'text-slate-600'} mb-3`}>Pending Tool Execution</h4>
+                    {pendingWorkflow.execution_log
+                      .filter(log => log.node === 'tools' || log.node === 'planner')
+                      .map((log, idx) => (
+                        <div key={idx} className={`${isDarkMode ? 'bg-slate-800/50 border-slate-700' : 'bg-white border-slate-200'} border rounded-xl p-4`}>
+                          <div className="flex items-start justify-between">
+                            <div>
+                              <div className="flex items-center gap-2 mb-2">
+                                <span className="px-2 py-0.5 bg-emerald-500/10 border border-emerald-500/30 rounded text-[10px] font-bold text-emerald-400 uppercase">
+                                  {log.node}
+                                </span>
+                                {log.route && (
+                                  <span className={`text-xs font-medium ${isDarkMode ? 'text-slate-400' : 'text-slate-600'}`}>
+                                    Route: {log.route}
+                                  </span>
+                                )}
+                              </div>
+                              {log.reasoning && (
+                                <p className={`text-xs ${isDarkMode ? 'text-slate-400' : 'text-slate-600'} leading-relaxed`}>
+                                  {log.reasoning}
+                                </p>
+                              )}
+                              {log.status === 'awaiting_approval' && (
+                                <p className={`text-xs ${isDarkMode ? 'text-amber-400' : 'text-amber-600'} mt-2 font-medium`}>
+                                  ⏸ {log.reason || 'Paused for approval'}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between gap-4">
+                  <div className={`flex-1 ${isDarkMode ? 'text-slate-500' : 'text-slate-600'} text-xs`}>
+                    <span className="font-mono">Run ID: {pendingWorkflow.run_id.slice(0, 16)}...</span>
+                  </div>
+                  <div className="flex gap-3">
+                    <button
+                      onClick={() => handleApproveWorkflow(false, 'User declined tool execution')}
+                      className={`px-6 py-3 rounded-xl text-sm font-bold uppercase tracking-wider ${isDarkMode ? 'bg-red-500/10 hover:bg-red-500/20 text-red-400 border-red-500/30' : 'bg-red-50 hover:bg-red-100 text-red-600 border-red-200'} border transition-all`}
+                    >
+                      Reject
+                    </button>
+                    <button
+                      onClick={() => handleApproveWorkflow(true, 'User approved tool execution')}
+                      className="px-8 py-3 rounded-xl text-sm font-bold uppercase tracking-wider bg-emerald-600 hover:bg-emerald-500 text-white transition-all shadow-lg shadow-emerald-500/20"
+                    >
+                      Approve & Resume
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
