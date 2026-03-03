@@ -33,6 +33,7 @@ import sys
 import json
 import math
 import time
+import uuid
 import operator
 from collections import Counter
 from datetime import datetime, timezone, timedelta
@@ -67,6 +68,18 @@ except ImportError:
     sys.exit("Error: httpx required. Run: pip install httpx")
 
 try:
+    import redis as redis_lib
+except ImportError:
+    redis_lib = None
+
+try:
+    from langgraph.checkpoint.memory import MemorySaver
+    from langgraph.checkpoint.base import BaseCheckpointSaver
+except ImportError:
+    MemorySaver = None
+    BaseCheckpointSaver = None
+
+try:
     from langgraph.graph import StateGraph, START, END
 except ImportError:
     try:
@@ -87,6 +100,9 @@ INTERNAL_MODEL_ENDPOINT = os.environ.get(
 INTERNAL_MODEL_NAME = os.environ.get("INTERNAL_MODEL_NAME", "llama-3.3-70b")
 LLM_TIMEOUT = int(os.environ.get("LLM_TIMEOUT", "8"))
 HTTP_TIMEOUT = int(os.environ.get("HTTP_TIMEOUT", "10"))
+REDIS_URL = os.environ.get("REDIS_URL", "").strip()
+REDIS_KEY_PREFIX = os.environ.get("REDIS_KEY_PREFIX", "aiwf:langgraph")
+REDIS_STATE_TTL_SECONDS = max(60, int(os.environ.get("REDIS_STATE_TTL_SECONDS", "86400")))
 
 
 def _log(msg: str):
@@ -95,6 +111,91 @@ def _log(msg: str):
         # Replace Unicode arrows with ASCII equivalents for Windows console compatibility
         msg = msg.replace("→", "->").replace("←", "<-").replace("↔", "<->")
         print(f"  [WORKFLOW] {msg}")
+
+
+def _merge_state(target: dict, delta: dict) -> dict:
+    """Merge node output into current state, preserving aggregated execution logs."""
+    for key, value in delta.items():
+        if key == "execution_log" and isinstance(value, list):
+            existing = target.get("execution_log", [])
+            if not isinstance(existing, list):
+                existing = []
+            target["execution_log"] = existing + value
+        else:
+            target[key] = value
+    return target
+
+
+class RedisStatePersistence:
+    """Persist graph state snapshots in Redis for each workflow run."""
+
+    def __init__(self):
+        self.enabled = False
+        self.reason = ""
+        self.client = None
+        self.url = REDIS_URL
+        self.key_prefix = REDIS_KEY_PREFIX
+        self.ttl_seconds = REDIS_STATE_TTL_SECONDS
+        self._connect()
+
+    def _connect(self):
+        if not self.url:
+            self.reason = "REDIS_URL not set"
+            return
+        if redis_lib is None:
+            self.reason = "redis package not installed"
+            return
+        try:
+            self.client = redis_lib.Redis.from_url(self.url, decode_responses=True)
+            self.client.ping()
+            self.enabled = True
+            self.reason = "connected"
+        except Exception as e:
+            self.enabled = False
+            self.reason = f"connection failed: {e}"
+            self.client = None
+
+    def _states_key(self, run_id: str) -> str:
+        return f"{self.key_prefix}:run:{run_id}:states"
+
+    def _latest_key(self, run_id: str) -> str:
+        return f"{self.key_prefix}:run:{run_id}:latest"
+
+    def save_snapshot(self, run_id: str, stage: str, state: dict):
+        if not self.enabled or self.client is None:
+            return
+        payload = {
+            "run_id": run_id,
+            "stage": stage,
+            "timestamp": time.time(),
+            "state": state,
+        }
+        try:
+            encoded = json.dumps(payload, default=str)
+            pipe = self.client.pipeline()
+            pipe.rpush(self._states_key(run_id), encoded)
+            pipe.expire(self._states_key(run_id), self.ttl_seconds)
+            pipe.set(self._latest_key(run_id), encoded, ex=self.ttl_seconds)
+            pipe.execute()
+        except Exception as e:
+            _log(f"REDIS persistence write failed: {e}")
+
+    def status(self) -> dict:
+        return {
+            "enabled": self.enabled,
+            "reason": self.reason,
+            "url_configured": bool(self.url),
+            "ttl_seconds": self.ttl_seconds,
+            "key_prefix": self.key_prefix,
+        }
+
+
+_state_store = RedisStatePersistence()
+
+
+def get_persistence_status() -> dict:
+    """Return Redis persistence status for health/introspection endpoints."""
+    return _state_store.status()
 
 
 # ═══════════════════════════════════════════════════════════
@@ -1682,6 +1783,7 @@ def _execute_tool_call(tool_name: str, entity: str, original_prompt: str = "") -
 
 class AgentState(TypedDict):
     """The state object that flows through every node in the graph."""
+    run_id: str
     user_prompt: str
     route: str  # rag_only | mcp_only | hybrid | direct
     plan_reasoning: str
@@ -1692,6 +1794,9 @@ class AgentState(TypedDict):
     active_model: str
     execution_log: Annotated[list, operator.add]  # Accumulates across all nodes
     error: str
+    interrupt_requested: bool
+    interrupt_reason: str
+    human_approved: bool
 
 
 # ═══════════════════════════════════════════════════════════
@@ -1881,6 +1986,22 @@ def tool_node(state: AgentState) -> dict:
     prompt = state["user_prompt"]
     _log("TOOLS: analyzing prompt for tool calls...")
 
+    # Check if human approval is required and not yet granted
+    if state.get("interrupt_requested") and not state.get("human_approved"):
+        _log("TOOLS: Interrupt requested, pausing for human approval")
+        return {
+            "interrupt_requested": True,
+            "interrupt_reason": state.get("interrupt_reason", "Human approval required before tool execution"),
+            "execution_log": [
+                {
+                    "node": "tools",
+                    "action": "awaiting_approval",
+                    "reason": state.get("interrupt_reason", "Human approval required"),
+                    "timestamp": time.time(),
+                }
+            ],
+        }
+
     start = time.time()
     results = run_tools(prompt)
     elapsed_ms = round((time.time() - start) * 1000, 1)
@@ -2016,7 +2137,7 @@ def route_after_rag(state: AgentState) -> str:
 # ═══════════════════════════════════════════════════════════
 
 
-def build_graph():
+def build_graph(checkpointer: BaseCheckpointSaver | None = None):
     """Construct and compile the LangGraph directed workflow."""
     builder = StateGraph(AgentState)
 
@@ -2051,7 +2172,13 @@ def build_graph():
     # Synthesizer → END
     builder.add_edge("synthesizer", END)
 
-    return builder.compile()
+    # Compile with checkpointer for interrupt support
+    compile_kwargs = {}
+    if checkpointer:
+        compile_kwargs["checkpointer"] = checkpointer
+        compile_kwargs["interrupt_before"] = ["tools"]  # Interrupt before sensitive operations
+    
+    return builder.compile(**compile_kwargs)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -2060,25 +2187,42 @@ def build_graph():
 
 # Pre-compiled graph singleton
 _graph = None
+_checkpointer = None
+
+
+def get_checkpointer():
+    """Get or create the checkpointer for interrupt support."""
+    global _checkpointer
+    if _checkpointer is None and MemorySaver:
+        _checkpointer = MemorySaver()
+    return _checkpointer
 
 
 def get_graph():
     """Get (or build) the compiled LangGraph workflow."""
     global _graph
     if _graph is None:
-        _graph = build_graph()
+        checkpointer = get_checkpointer()
+        _graph = build_graph(checkpointer=checkpointer)
     return _graph
 
 
-def run_workflow(prompt: str) -> dict:
+def run_workflow(prompt: str, run_id: str | None = None, enable_interrupts: bool = False) -> dict:
     """
     Run the full agentic workflow for a given prompt.
+
+    Args:
+        prompt: The user query to process
+        run_id: Optional workflow run identifier
+        enable_interrupts: If True, pause before tool execution for human approval
 
     Returns the complete final state including the response,
     execution log, model used, RAG sources, and tool results.
     """
     graph = get_graph()
+    request_run_id = run_id or f"run_{uuid.uuid4().hex[:12]}"
     initial_state: dict = {
+        "run_id": request_run_id,
         "user_prompt": prompt,
         "route": "",
         "plan_reasoning": "",
@@ -2089,15 +2233,152 @@ def run_workflow(prompt: str) -> dict:
         "active_model": "",
         "execution_log": [],
         "error": "",
+        "interrupt_requested": enable_interrupts,
+        "interrupt_reason": "Human approval required before tool execution" if enable_interrupts else "",
+        "human_approved": False,
     }
+
+    if _state_store.enabled:
+        _state_store.save_snapshot(request_run_id, "initial", dict(initial_state))
+
     try:
-        result = graph.invoke(initial_state)
+        config = {"configurable": {"thread_id": request_run_id}}
+        
+        if _state_store.enabled:
+            current_state = dict(initial_state)
+            interrupted = False
+            for update in graph.stream(initial_state, config, stream_mode="updates"):
+                if not isinstance(update, dict):
+                    continue
+                for stage, delta in update.items():
+                    if isinstance(delta, dict):
+                        _merge_state(current_state, delta)
+                        # Check for interrupt
+                        if current_state.get("interrupt_requested") and not current_state.get("human_approved"):
+                            interrupted = True
+                    _state_store.save_snapshot(request_run_id, str(stage), dict(current_state))
+            
+            result = current_state
+            
+            # If interrupted and no final response, mark as awaiting approval
+            if interrupted and not result.get("final_response"):
+                result["final_response"] = "[AWAITING HUMAN APPROVAL] Workflow paused before tool execution."
+                result["interrupted"] = True
+            elif not result.get("final_response"):
+                # Fallback to invoke if streaming didn't complete
+                result = dict(graph.invoke(initial_state, config))
+        else:
+            result = dict(graph.invoke(initial_state, config))
+
+        result["run_id"] = request_run_id
+        result["redis_persisted"] = _state_store.enabled
+        result["interrupted"] = result.get("interrupt_requested", False) and not result.get("human_approved", False)
+
+        if _state_store.enabled:
+            _state_store.save_snapshot(request_run_id, "completed", dict(result))
         return dict(result)
     except Exception as e:
-        return {
+        failure = {
             **initial_state,
+            "run_id": request_run_id,
+            "redis_persisted": _state_store.enabled,
             "error": str(e),
             "final_response": f"Workflow error: {e}",
+        }
+        if _state_store.enabled:
+            _state_store.save_snapshot(request_run_id, "error", dict(failure))
+        return failure
+
+
+def resume_workflow(run_id: str, approved: bool, reason: str | None = None) -> dict:
+    """
+    Resume an interrupted workflow after human approval/rejection.
+    
+    Args:
+        run_id: The workflow run identifier
+        approved: Whether to approve (True) or reject (False) execution
+        reason: Optional reason for the decision
+        
+    Returns:
+        Updated workflow state with completion status
+    """
+    graph = get_graph()
+    checkpointer = get_checkpointer()
+    
+    if not checkpointer:
+        return {
+            "error": "Checkpointer not available - cannot resume workflows without persistence",
+            "run_id": run_id,
+        }
+    
+    try:
+        # Get the latest state from checkpoint
+        config = {"configurable": {"thread_id": run_id}}
+        state = graph.get_state(config)
+        
+        if not state or not state.values:
+            return {
+                "error": f"No checkpoint found for run_id={run_id}",
+                "run_id": run_id,
+            }
+        
+        current_state = dict(state.values)
+        
+        # Check if workflow was actually interrupted
+        if not current_state.get("interrupt_requested"):
+            return {
+                "error": f"Workflow {run_id} was not interrupted - cannot approve/reject",
+                "run_id": run_id,
+                "current_state": current_state,
+            }
+        
+        # Update state with approval decision
+        current_state["human_approved"] = approved
+        
+        if not approved:
+            # Rejected - mark as completed with rejection message
+            current_state["final_response"] = f"[REJECTED] {reason or 'User declined tool execution'}"
+            current_state["error"] = reason or "User declined"
+            
+            if _state_store.enabled:
+                _state_store.save_snapshot(run_id, "rejected", dict(current_state))
+            
+            return {
+                "run_id": run_id,
+                "status": "rejected",
+                "final_response": current_state["final_response"],
+                "redis_persisted": _state_store.enabled,
+            }
+        
+        # Approved - update state and resume from checkpoint
+        graph.update_state(config, current_state)
+        
+        # Resume execution from the checkpoint
+        result_state = dict(current_state)
+        for update in graph.stream(None, config, stream_mode="updates"):
+            if not isinstance(update, dict):
+                continue
+            for stage, delta in update.items():
+                if isinstance(delta, dict):
+                    _merge_state(result_state, delta)
+                if _state_store.enabled:
+                    _state_store.save_snapshot(run_id, f"resumed_{stage}", dict(result_state))
+        
+        result_state["run_id"] = run_id
+        result_state["redis_persisted"] = _state_store.enabled
+        result_state["status"] = "completed_after_approval"
+        
+        if _state_store.enabled:
+            _state_store.save_snapshot(run_id, "completed", dict(result_state))
+        
+        return dict(result_state)
+        
+    except Exception as e:
+        error_msg = f"Failed to resume workflow {run_id}: {str(e)}"
+        return {
+            "error": error_msg,
+            "run_id": run_id,
+            "redis_persisted": _state_store.enabled,
         }
 
 

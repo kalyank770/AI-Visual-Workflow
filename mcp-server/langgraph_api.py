@@ -41,7 +41,7 @@ except ImportError:
         "Run: pip install fastapi uvicorn"
     )
 
-from langgraph_workflow import run_workflow, get_graph, KNOWLEDGE_BASE, _rag_engine
+from langgraph_workflow import run_workflow, get_graph, KNOWLEDGE_BASE, _rag_engine, get_persistence_status, resume_workflow
 
 
 # ─── FastAPI App ────────────────────────────────────────────
@@ -76,18 +76,29 @@ class RunRequest(BaseModel):
         min_length=1,
         max_length=5000,
     )
+    run_id: str | None = Field(
+        None,
+        description="Optional workflow run identifier (auto-generated if omitted)",
+    )
     verbose: bool = Field(
         False,
         description="Enable verbose execution logging to stdout",
     )
+    enable_interrupts: bool = Field(
+        False,
+        description="Enable human-in-the-loop interrupts before tool execution",
+    )
 
 
 class RunResponse(BaseModel):
+    run_id: str
     prompt: str
     route: str
     plan_reasoning: str
     final_response: str
     active_model: str
+    redis_persisted: bool
+    interrupted: bool = False
     rag_sources: list
     tool_results: list
     execution_log: list
@@ -101,11 +112,30 @@ class HealthResponse(BaseModel):
     rag_chunks: int
     knowledge_docs: int
     llm_available: dict
+    persistence: dict
 
 
 class GraphInfoResponse(BaseModel):
     nodes: list[str]
     edges: list[dict]
+
+
+class ApprovalRequest(BaseModel):
+    approved: bool = Field(
+        ...,
+        description="Whether to approve (True) or reject (False) the workflow execution",
+    )
+    reason: str | None = Field(
+        None,
+        description="Optional reason for approval or rejection",
+    )
+
+
+class ApprovalResponse(BaseModel):
+    run_id: str
+    status: str  # "approved", "rejected", "resumed"
+    message: str
+    result: dict | None = None
 
 
 # ─── Endpoints ──────────────────────────────────────────────
@@ -128,23 +158,74 @@ async def api_run(request: RunRequest):
 
     start = time.time()
     try:
-        result = run_workflow(request.prompt)
+        result = run_workflow(
+            request.prompt,
+            run_id=request.run_id,
+            enable_interrupts=request.enable_interrupts
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     elapsed = round(time.time() - start, 3)
 
     return RunResponse(
+        run_id=result.get("run_id", request.run_id or ""),
         prompt=result.get("user_prompt", request.prompt),
         route=result.get("route", ""),
         plan_reasoning=result.get("plan_reasoning", ""),
         final_response=result.get("final_response", ""),
         active_model=result.get("active_model", ""),
+        redis_persisted=bool(result.get("redis_persisted", False)),
+        interrupted=bool(result.get("interrupted", False)),
         rag_sources=result.get("rag_sources", []),
         tool_results=result.get("tool_results", []),
         execution_log=result.get("execution_log", []),
         execution_time_s=elapsed,
         error=result.get("error", ""),
     )
+
+
+@app.post("/api/approve/{run_id}", response_model=ApprovalResponse)
+async def api_approve(run_id: str, request: ApprovalRequest):
+    """
+    Approve or reject an interrupted workflow and optionally resume execution.
+    
+    If approved=True, sets human_approved flag and resumes the workflow from checkpoint.
+    If approved=False, marks the workflow as rejected without resuming.
+    """
+    try:
+        if request.approved:
+            # Approve and resume the workflow
+            result = resume_workflow(run_id, approved=True, reason=request.reason)
+            
+            if result.get("error"):
+                return ApprovalResponse(
+                    run_id=run_id,
+                    status="error",
+                    message=result["error"],
+                    result=None,
+                )
+            
+            return ApprovalResponse(
+                run_id=run_id,
+                status="resumed",
+                message="Workflow approved and resumed successfully",
+                result=result,
+            )
+        else:
+            # Reject the workflow
+            result = resume_workflow(run_id, approved=False, reason=request.reason or "Rejected by user")
+            
+            return ApprovalResponse(
+                run_id=run_id,
+                status="rejected",
+                message=f"Workflow rejected: {request.reason or 'User declined'}",
+                result=result,
+            )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to process approval for run_id={run_id}: {str(e)}"
+        )
 
 
 @app.get("/api/health", response_model=HealthResponse)
@@ -169,6 +250,7 @@ async def api_health():
             "gemini": bool(gemini_key),
             "template_fallback": True,
         },
+        persistence=get_persistence_status(),
     )
 
 

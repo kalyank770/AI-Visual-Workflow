@@ -1172,21 +1172,195 @@ OpenText Information Governance Framework:
 
 // ─── Vector Store ──────────────────────────────────────────
 
+const VECTOR_STORE_CACHE_KEY = "aiwf_rag_vector_store_v1";
+const VECTOR_STORE_SCHEMA_VERSION = 1;
+const ANN_MAX_NEIGHBORS = 8;
+const ANN_ENTRY_POINTS = 4;
+const ANN_MAX_HOPS = 6;
+
+interface PersistedVectorStore {
+  version: number;
+  corpusSignature: string;
+  savedAt: string;
+  chunks: DocumentChunk[];
+}
+
+function getCorpusSignature(): string {
+  return BUILT_IN_DOCUMENTS.map((doc) => `${doc.title}:${doc.content.length}`).join("|");
+}
+
 class InMemoryVectorStore {
   private chunks: DocumentChunk[] = [];
   private isInitialized = false;
   private initPromise: Promise<void> | null = null;
+  private metadataStore = new Map<string, { source: string; metadata: DocumentChunk["metadata"]; hasEmbedding: boolean; embeddingDimensions: number }>();
+  private annGraph = new Map<string, string[]>();
+  private readonly corpusSignature = getCorpusSignature();
+
+  private updateMetadataStore(chunks: DocumentChunk[]): void {
+    for (const chunk of chunks) {
+      this.metadataStore.set(chunk.id, {
+        source: chunk.source,
+        metadata: chunk.metadata,
+        hasEmbedding: Array.isArray(chunk.embedding) && chunk.embedding.length > 0,
+        embeddingDimensions: chunk.embedding?.length || 0,
+      });
+    }
+  }
+
+  private persistToLocalStore(): void {
+    if (typeof localStorage === "undefined") return;
+    const payload: PersistedVectorStore = {
+      version: VECTOR_STORE_SCHEMA_VERSION,
+      corpusSignature: this.corpusSignature,
+      savedAt: new Date().toISOString(),
+      chunks: this.chunks,
+    };
+    try {
+      localStorage.setItem(VECTOR_STORE_CACHE_KEY, JSON.stringify(payload));
+    } catch (e) {
+      console.warn("[RAG] Failed to persist vector store:", e);
+    }
+  }
+
+  private tryHydrateFromLocalStore(): boolean {
+    if (typeof localStorage === "undefined") return false;
+    try {
+      const raw = localStorage.getItem(VECTOR_STORE_CACHE_KEY);
+      if (!raw) return false;
+      const parsed = JSON.parse(raw) as PersistedVectorStore;
+      if (
+        !parsed ||
+        parsed.version !== VECTOR_STORE_SCHEMA_VERSION ||
+        parsed.corpusSignature !== this.corpusSignature ||
+        !Array.isArray(parsed.chunks)
+      ) {
+        return false;
+      }
+      this.chunks = parsed.chunks.filter((c): c is DocumentChunk => {
+        return Boolean(c && typeof c.id === "string" && typeof c.content === "string" && typeof c.source === "string" && c.metadata);
+      });
+      this.metadataStore.clear();
+      this.updateMetadataStore(this.chunks);
+      this.buildAnnGraph();
+      this.isInitialized = true;
+      if (this.chunks.some(c => Array.isArray(c.embedding) && c.embedding.length > 0)) {
+        embeddingAvailable = true;
+      }
+      console.log(`[RAG] Hydrated vector store from cache: ${this.documentCount} documents, ${this.size} chunks`);
+      return true;
+    } catch (e) {
+      console.warn("[RAG] Failed to hydrate cached vector store:", e);
+      return false;
+    }
+  }
+
+  private buildAnnGraph(): void {
+    this.annGraph.clear();
+    const embeddedChunks = this.chunks.filter(c => Array.isArray(c.embedding) && c.embedding.length > 0);
+    if (embeddedChunks.length < 2) return;
+
+    for (const chunk of embeddedChunks) {
+      const scoredNeighbors: { id: string; score: number }[] = [];
+      for (const other of embeddedChunks) {
+        if (other.id === chunk.id || !chunk.embedding || !other.embedding) continue;
+        const score = this.cosineSimilarity(chunk.embedding, other.embedding);
+        scoredNeighbors.push({ id: other.id, score });
+      }
+      scoredNeighbors.sort((a, b) => b.score - a.score);
+      this.annGraph.set(
+        chunk.id,
+        scoredNeighbors.slice(0, ANN_MAX_NEIGHBORS).map((n) => n.id)
+      );
+    }
+  }
+
+  private hnswLikeSearch(queryEmbedding: number[], topK: number): SearchResult[] {
+    const embeddedChunks = this.chunks.filter(c => Array.isArray(c.embedding) && c.embedding.length > 0);
+    if (embeddedChunks.length === 0) return [];
+    if (this.annGraph.size === 0) this.buildAnnGraph();
+    if (this.annGraph.size === 0) return this.vectorSearch(queryEmbedding, topK);
+
+    const chunkMap = new Map(embeddedChunks.map((chunk) => [chunk.id, chunk] as const));
+    const visited = new Set<string>();
+    const candidates = new Set<string>();
+    const queue: string[] = embeddedChunks.slice(0, Math.min(ANN_ENTRY_POINTS, embeddedChunks.length)).map(c => c.id);
+
+    queue.forEach((id) => {
+      visited.add(id);
+      candidates.add(id);
+    });
+
+    let hops = 0;
+    while (queue.length > 0 && hops < ANN_MAX_HOPS) {
+      const currentId = queue.shift()!;
+      const currentChunk = chunkMap.get(currentId);
+      if (!currentChunk?.embedding) {
+        hops++;
+        continue;
+      }
+
+      const neighborIds = this.annGraph.get(currentId) || [];
+      const rankedNeighbors = neighborIds
+        .map((neighborId) => {
+          const neighbor = chunkMap.get(neighborId);
+          if (!neighbor?.embedding) return null;
+          return {
+            id: neighborId,
+            score: this.cosineSimilarity(queryEmbedding, neighbor.embedding),
+          };
+        })
+        .filter((entry): entry is { id: string; score: number } => entry !== null)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 2);
+
+      for (const neighbor of rankedNeighbors) {
+        candidates.add(neighbor.id);
+        if (!visited.has(neighbor.id)) {
+          visited.add(neighbor.id);
+          queue.push(neighbor.id);
+        }
+      }
+      hops++;
+    }
+
+    if (candidates.size < topK * 2) {
+      for (const chunk of embeddedChunks) {
+        candidates.add(chunk.id);
+        if (candidates.size >= topK * 2) break;
+      }
+    }
+
+    return Array.from(candidates)
+      .map((id) => {
+        const chunk = chunkMap.get(id);
+        if (!chunk?.embedding) return null;
+        const score = this.cosineSimilarity(queryEmbedding, chunk.embedding);
+        return { chunk, score, method: "vector" as const };
+      })
+        .filter((entry): entry is { chunk: DocumentChunk; score: number; method: "vector" } => entry !== null)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, topK);
+  }
 
   /** Add pre-embedded chunks to the store */
   addChunks(chunks: DocumentChunk[]): void {
     this.chunks.push(...chunks);
+    this.updateMetadataStore(chunks);
+    this.buildAnnGraph();
+    this.persistToLocalStore();
   }
 
   /** Remove all chunks */
   clear(): void {
     this.chunks = [];
+    this.metadataStore.clear();
+    this.annGraph.clear();
     this.isInitialized = false;
     this.initPromise = null;
+    if (typeof localStorage !== "undefined") {
+      localStorage.removeItem(VECTOR_STORE_CACHE_KEY);
+    }
   }
 
   /** Get total chunk count */
@@ -1280,7 +1454,7 @@ class InMemoryVectorStore {
   /** Hybrid search — combines vector + keyword via Reciprocal Rank Fusion */
   hybridSearch(queryEmbedding: number[] | null, query: string, topK: number): SearchResult[] {
     const k = 60; // RRF constant
-    const vectorResults = queryEmbedding ? this.vectorSearch(queryEmbedding, topK * 2) : [];
+    const vectorResults = queryEmbedding ? this.hnswLikeSearch(queryEmbedding, topK * 2) : [];
     const keywordResults = this.keywordSearch(query, topK * 2);
 
     // RRF merge
@@ -1314,13 +1488,19 @@ class InMemoryVectorStore {
   /** Initialize with built-in documents */
   async initialize(): Promise<void> {
     if (this.isInitialized) return;
-    if (this.initPromise) return this.initPromise;
-
-    this.initPromise = this._doInitialize();
+    if (!this.initPromise) {
+      this.initPromise = this._doInitialize().finally(() => {
+        this.initPromise = null;
+      });
+    }
     return this.initPromise;
   }
 
   private async _doInitialize(): Promise<void> {
+    if (this.tryHydrateFromLocalStore()) {
+      return;
+    }
+
     console.log("[RAG] Initializing vector store with built-in documents...");
 
     // Chunk all built-in documents
@@ -1334,7 +1514,7 @@ class InMemoryVectorStore {
     const embedded = await embedChunks(allChunks);
     this.addChunks(embedded);
     this.isInitialized = true;
-    console.log(`[RAG] Vector store ready: ${this.documentCount} documents, ${this.size} chunks`);
+    console.log(`[RAG] Vector store ready: ${this.documentCount} documents, ${this.size} chunks, ann_nodes=${this.annGraph.size}, metadata_rows=${this.metadataStore.size}`);
   }
 }
 

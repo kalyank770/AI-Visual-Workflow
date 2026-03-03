@@ -15,6 +15,11 @@ An interactive architectural platform for designing, simulating, and inspecting 
 - Synthesis drawer showing final input and model response.
 - AI-driven component insight with internal model primary and Gemini fallback.
 - API key detection indicator and active model status badge.
+- RAG vector store persistence in browser local storage (cold-start hydration).
+- ANN neighbor-graph vector retrieval path (HNSW-style) with keyword hybrid fallback.
+- Redis-backed workflow state snapshots with graceful fallback to in-memory execution.
+- Human-in-the-loop interrupts: pause before tool execution, approve/reject via API.
+- Workflow resume from checkpoint with state persistence (LangGraph checkpointer integration).
 
 ## 🧭 Architecture Diagram
 ![Architecture diagram](images/architecture-diagram.png)
@@ -25,7 +30,60 @@ An interactive architectural platform for designing, simulating, and inspecting 
 3. Hybrid: UI -> LG -> RAG -> VDB -> RAG -> LG -> MCP -> LG -> OUT
 4. Direct LLM: UI -> LG -> LLM -> LG -> OUT
 
-## 🛠️ Setup From Scratch (Vite + React + TypeScript)
+## �️ Human-in-the-Loop Interrupt System
+
+The LangGraph workflow supports human approval before sensitive tool execution:
+
+### Enable Interrupts
+To enable interrupts when starting a workflow:
+```bash
+POST /api/run
+{
+  "prompt": "What's the weather in Paris?",
+  "enable_interrupts": true
+}
+```
+
+When interrupts are enabled:
+1. Workflow runs normally through intake, planner, and RAG nodes
+2. Before the tools node executes, the workflow pauses
+3. Response includes `"interrupted": true` and run_id for approval tracking
+4. Final response shows `[AWAITING HUMAN APPROVAL]` message
+
+### Approve Execution
+To approve and resume the interrupted workflow:
+```bash
+POST /api/approve/{run_id}
+{
+  "approved": true,
+  "reason": "Weather tool is safe to execute"
+}
+```
+
+### Reject Execution
+To reject the interrupted workflow:
+```bash
+POST /api/approve/{run_id}
+{
+  "approved": false,
+  "reason": "User declined weather API access"
+}
+```
+
+### State Persistence
+- Workflow checkpoints persist in Redis (optional, graceful fallback to in-memory)
+- Each node execution saves state snapshot with TTL
+- Resume retrieves checkpoint by thread_id (run_id)
+- Approved workflows continue from last checkpoint with tools allowed
+
+### Use Cases
+- Validate API calls before execution
+- Review tool parameters from LLM generation
+- Prevent data modification without confirmation
+- Audit sensitive operations (database writes, financial transactions)
+- Cost control for expensive API calls
+
+## �🛠️ Setup From Scratch (Vite + React + TypeScript)
 
 ### 1. Create the project
 ```bash
