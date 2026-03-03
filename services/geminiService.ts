@@ -208,6 +208,7 @@ const MODEL_CASCADE = [
   "gemini-2.5-pro",
   "gemini-2.5-flash",
   "gemini-1.5-flash",
+  "Gemma 3 27B",
   "gemini-1.5-pro",
 ];
 
