@@ -205,6 +205,7 @@ const App: React.FC = () => {
   const runIdRef = useRef(0);
   const toolDataRef = useRef<string[]>([]);
   const ragDataRef = useRef<RAGPipelineResult | null>(null);
+  const persistedLogCountRef = useRef(0);
   const [activeToolName, setActiveToolName] = useState<string | undefined>(undefined);
   const [activeToolNames, setActiveToolNames] = useState<string[]>([]);
 
@@ -216,6 +217,29 @@ const App: React.FC = () => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = 0;
     }
+  }, [state.logs]);
+
+  useEffect(() => {
+    if (state.logs.length === 0) return;
+
+    const unsentLogs = state.logs.slice(persistedLogCountRef.current);
+    if (unsentLogs.length === 0) return;
+
+    const persistLogs = async () => {
+      try {
+        const response = await fetch('/api/dashboard-logs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ logs: unsentLogs }),
+        });
+
+        if (response.ok) {
+          persistedLogCountRef.current = state.logs.length;
+        }
+      } catch {}
+    };
+
+    persistLogs();
   }, [state.logs]);
 
   // Health check on app initialization
@@ -510,6 +534,7 @@ const App: React.FC = () => {
     setShowFinalOutput(false);
     toolDataRef.current = [];
     ragDataRef.current = null;
+    persistedLogCountRef.current = 0;
     setActiveToolName(undefined);
     setActiveToolNames([]);
   };
@@ -914,11 +939,11 @@ const App: React.FC = () => {
         ],
       }));
 
-      // Create an abort controller with 30-second timeout
+      // Create an abort controller with 60-second timeout
       const controller = new AbortController();
       const timeoutId = setTimeout(() => {
         controller.abort();
-      }, 30000);
+      }, 60000);
       
       const response = await fetch('/api/run', {
         method: 'POST',
@@ -1005,11 +1030,12 @@ const App: React.FC = () => {
       let errorMessage = String(error);
       if (error instanceof Error) {
         if (error.name === 'AbortError') {
-          errorMessage = 'Request timeout - Backend is not responding (30 second timeout)';
+          errorMessage = 'Request timeout - Backend is not responding (60 second timeout)';
         } else {
           errorMessage = error.message;
         }
       }
+      const fallbackReason = `Backend API failed: ${errorMessage}`;
       
       setState(prev => ({
         ...prev,
@@ -1027,7 +1053,7 @@ const App: React.FC = () => {
       const mathResult = tryEvaluateMath(activePrompt);
       if (mathResult) {
         const fallbackLogId = `fallback_math_${Date.now()}`;
-        const analysisText = buildPathAnalysis('direct', 'Local calculator used due to backend unavailability.', buildStepPathFromRoute('direct'));
+        const analysisText = buildPathAnalysis('direct', `Local calculator used due to backend unavailability. ${fallbackReason}`, buildStepPathFromRoute('direct'));
         const fallbackSteps = buildStepPathFromRoute('direct');
         setState(prev => ({
           ...prev,
@@ -1040,7 +1066,7 @@ const App: React.FC = () => {
               type: 'SYSTEM',
               message: 'Local Calculator Fallback',
               timestamp: new Date().toLocaleTimeString(),
-              details: 'Backend unavailable. Computation evaluated locally.',
+              details: `Backend unavailable. Computation evaluated locally. ${fallbackReason}`,
             },
           ],
         }));
@@ -1068,7 +1094,7 @@ const App: React.FC = () => {
           ? `Backend unavailable. Retrieved context:\n\n${ragContextBlock}`
           : 'Backend unavailable. Please try again.';
         const fallbackLogId = `fallback_${Date.now()}`;
-        const analysisText = buildPathAnalysis('rag_only', 'Local RAG pipeline executed due to backend unavailability.', buildStepPathFromRoute('rag_only'));
+        const analysisText = buildPathAnalysis('rag_only', `Local RAG pipeline executed due to backend unavailability. ${fallbackReason}`, buildStepPathFromRoute('rag_only'));
         const fallbackSteps = buildStepPathFromRoute('rag_only');
 
         setState(prev => ({
@@ -1082,7 +1108,7 @@ const App: React.FC = () => {
               type: 'SYSTEM',
               message: 'Local RAG Fallback',
               timestamp: new Date().toLocaleTimeString(),
-              details: 'Backend unavailable. Returned local RAG context only.',
+              details: `Backend unavailable. Returned local RAG context only. ${fallbackReason}`,
             },
           ],
         }));
@@ -1100,7 +1126,7 @@ const App: React.FC = () => {
         }
       } catch (fallbackError) {
         const fallbackLogId = `fallback_error_${Date.now()}`;
-        const analysisText = buildPathAnalysis('direct', 'Fallback failed; no local reasoning available.', buildStepPathFromRoute('direct'));
+        const analysisText = buildPathAnalysis('direct', `Fallback failed; no local reasoning available. ${fallbackReason}`, buildStepPathFromRoute('direct'));
         const fallbackSteps = buildStepPathFromRoute('direct');
         setState(prev => ({
           ...prev,

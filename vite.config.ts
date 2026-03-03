@@ -67,6 +67,11 @@ export default defineConfig(({ mode }) => {
             changeOrigin: true,
             rewrite: (path: string) => path,
           },
+          '/api/dashboard-logs': {
+            target: 'http://localhost:5001',
+            changeOrigin: true,
+            rewrite: (path: string) => path,
+          },
           '/api/yahoo-search': {
             target: 'https://query2.finance.yahoo.com',
             changeOrigin: true,

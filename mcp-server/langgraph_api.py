@@ -25,6 +25,8 @@ import os
 import sys
 import time
 import argparse
+from datetime import datetime
+import re
 
 # Add current directory to path for relative imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -136,6 +138,102 @@ class ApprovalResponse(BaseModel):
     status: str  # "approved", "rejected", "resumed"
     message: str
     result: dict | None = None
+
+
+class DashboardLogEntry(BaseModel):
+    id: str
+    type: str
+    message: str
+    timestamp: str
+    details: str | None = None
+    source: str | None = None
+    destination: str | None = None
+    inputData: dict | list | str | None = None
+    transformedData: dict | list | str | None = None
+
+
+class DashboardLogBatchRequest(BaseModel):
+    logs: list[DashboardLogEntry] = Field(default_factory=list)
+
+
+class DashboardLogBatchResponse(BaseModel):
+    status: str
+    written: int
+    file_path: str
+
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, ".."))
+LOG_DIR = os.path.join(PROJECT_ROOT, "logs")
+LOG_RETENTION_DAYS = int(os.environ.get("DASHBOARD_LOG_RETENTION_DAYS", "30"))
+LOG_FILE_PATTERN = re.compile(r"^dashboard-(\d{4}-\d{2}-\d{2})\.(?:jsonl|log)$")
+
+
+def get_dashboard_log_file_path(now: datetime | None = None) -> str:
+    current = now or datetime.now()
+    return os.path.join(LOG_DIR, f"dashboard-{current.strftime('%Y-%m-%d')}.log")
+
+
+def format_dashboard_timestamp(value: str) -> str:
+    return re.sub(r"\s*(AM|PM)$", "", value.strip(), flags=re.IGNORECASE)
+
+
+def format_dashboard_log_entry(entry: DashboardLogEntry) -> str:
+    timestamp = format_dashboard_timestamp(entry.timestamp)
+
+    if entry.source and entry.destination:
+        flow_line = f"{entry.source} → {entry.destination}"
+        detail_line = entry.details or entry.message
+        return f"{timestamp}\n{flow_line}\n{detail_line}"
+
+    message_line = entry.message
+    if entry.details:
+        message_line = f"{entry.message}: {entry.details}"
+
+    return f"{timestamp}\n{message_line}"
+
+
+def cleanup_old_dashboard_logs(now: datetime | None = None) -> int:
+    if not os.path.isdir(LOG_DIR):
+        return 0
+
+    reference = now or datetime.now()
+    deleted = 0
+
+    for name in os.listdir(LOG_DIR):
+        match = LOG_FILE_PATTERN.match(name)
+        if not match:
+            continue
+
+        try:
+            file_date = datetime.strptime(match.group(1), "%Y-%m-%d")
+        except ValueError:
+            continue
+
+        if (reference - file_date).days > LOG_RETENTION_DAYS:
+            try:
+                os.remove(os.path.join(LOG_DIR, name))
+                deleted += 1
+            except OSError:
+                continue
+
+    return deleted
+
+
+def append_dashboard_logs(entries: list[DashboardLogEntry]) -> tuple[int, str]:
+    log_file = get_dashboard_log_file_path()
+    cleanup_old_dashboard_logs()
+    if not entries:
+        return 0, log_file
+
+    os.makedirs(LOG_DIR, exist_ok=True)
+
+    lines = [format_dashboard_log_entry(entry) for entry in entries]
+
+    with open(log_file, "a", encoding="utf-8") as f:
+        f.write("\n\n".join(lines) + "\n\n")
+
+    return len(lines), log_file
 
 
 # ─── Endpoints ──────────────────────────────────────────────
@@ -280,6 +378,20 @@ async def api_graph():
     return GraphInfoResponse(nodes=nodes, edges=edges)
 
 
+@app.post("/api/dashboard-logs", response_model=DashboardLogBatchResponse)
+async def api_dashboard_logs(request: DashboardLogBatchRequest):
+    """Persist dashboard logs to a local JSONL file for auditing and traceability."""
+    try:
+        written, file_path = append_dashboard_logs(request.logs)
+        return DashboardLogBatchResponse(
+            status="ok",
+            written=written,
+            file_path=file_path,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to persist dashboard logs: {str(e)}")
+
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):
     """Catch-all error handler."""
@@ -290,6 +402,44 @@ async def global_exception_handler(request, exc):
 
 
 # ─── Server Startup ─────────────────────────────────────────
+
+def find_available_port(host: str, start_port: int, max_attempts: int = 10) -> int:
+    """Find an available port by actually trying to bind to it.
+    
+    Does NOT use SO_REUSEADDR so we get accurate port conflict detection.
+    """
+    import socket
+    
+    for offset in range(max_attempts):
+        port = start_port + offset
+        ipv4_available = False
+        
+        # Check IPv4 - NO SO_REUSEADDR so we detect real conflicts
+        sock4 = None
+        try:
+            sock4 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            # Do NOT set SO_REUSEADDR - we want to detect if port is truly in use
+            test_host = "0.0.0.0" if host == "0.0.0.0" else host
+            sock4.bind((test_host, port))
+            sock4.close()
+            ipv4_available = True
+        except OSError as e:
+            if sock4:
+                try:
+                    sock4.close()
+                except:
+                    pass
+            if offset == 0:
+                print(f"Port {port} is in use, trying another one...")
+        
+        # Port is available if IPv4 binding succeeded
+        if ipv4_available:
+            if offset > 0:
+                print(f"Using port {port} instead.\n")
+            return port
+    
+    raise RuntimeError(f"Could not find an available port after {max_attempts} attempts starting from {start_port}")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="LangGraph API Server")
@@ -304,15 +454,22 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
+    # Find an available port
+    try:
+        port = find_available_port(args.host, args.port)
+    except RuntimeError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+    
     print(f"\n{'=' * 60}")
     print(f"  LangGraph API Server")
-    print(f"  http://{args.host}:{args.port}")
-    print(f"  Docs: http://localhost:{args.port}/docs")
+    print(f"  http://{args.host}:{port}")
+    print(f"  Docs: http://localhost:{port}/docs")
     print(f"{'=' * 60}\n")
 
     uvicorn.run(
         "langgraph_api:app",
         host=args.host,
-        port=args.port,
+        port=port,
         reload=args.reload,
     )
