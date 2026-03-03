@@ -3,8 +3,6 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { WorkflowStep, SimulationState, LogEntry } from './types';
 import { ARCHITECTURE_COMPONENTS, STEP_METADATA } from './constants';
 import AnimatedFlow from './components/AnimatedFlow';
-import { getArchitectInsight, chatWithArchitect, hasAnyApiKeys } from './services/geminiService';
-import { runToolsForQuery } from './services/liveTools';
 import { runRAGPipeline, RAGPipelineResult } from './services/ragService';
 
 const InternalComponentDetail = ({ detail, isDarkMode }: { detail: any, isDarkMode: boolean }) => {
@@ -78,7 +76,45 @@ const App: React.FC = () => {
     prompt: string;
     execution_log: any[];
   } | null>(null);
-  const hasKeys = useMemo(() => hasAnyApiKeys(), []);
+  const RAG_TERMS = [
+    "rag",
+    "internal",
+    "policy",
+    "support",
+    "document",
+    "guide",
+    "knowledge",
+    "help",
+    "in house",
+    "org",
+    "organization",
+    "doc",
+    "docs",
+    "documentation",
+    "knowledge base",
+    "kb",
+    "sop",
+    "handbook",
+    "opentext",
+    "open text",
+    "otex",
+    "otcs",
+    "content server",
+    "documentum",
+    "extended ecm",
+    "xecm",
+    "aviator",
+    "magellan",
+    "exstream",
+    "teamsite",
+    "appworks",
+    "fortify",
+    "arcsight",
+    "netiq",
+    "voltage",
+    "loadrunner",
+    "smax",
+  ];
   const componentSubtitles: Record<string, string> = {
     LG: 'Decision Engine',
     LLM: 'Text Generator (Brain)',
@@ -169,6 +205,7 @@ const App: React.FC = () => {
   const toolDataRef = useRef<string[]>([]);
   const ragDataRef = useRef<RAGPipelineResult | null>(null);
   const [activeToolName, setActiveToolName] = useState<string | undefined>(undefined);
+  const backendDoneRef = useRef(false);
 
   useEffect(() => {
     isPausedRef.current = isPaused;
@@ -180,6 +217,24 @@ const App: React.FC = () => {
     }
   }, [state.logs]);
 
+  // Health check on app initialization
+  useEffect(() => {
+    const checkBackendHealth = async () => {
+      try {
+        const response = await fetch('/api/health', { signal: AbortSignal.timeout(5000) });
+        if (response.ok) {
+        } else {
+        }
+      } catch (error) {
+      }
+    };
+    checkBackendHealth();
+  }, []);
+  useEffect(() => {
+    if (state.finalOutput) {
+    }
+  }, [state.finalOutput, state.finalInput]);
+
   // Smarter contextualization based on prompt type
   const getStepDetails = (step: WorkflowStep, meta: any, activePrompt: string) => {
     let inputData = meta.inputData;
@@ -189,45 +244,7 @@ const App: React.FC = () => {
     const promptLower = activePrompt.toLowerCase();
     const isRagOnly = promptLower.includes("rag only");
     const isMcpOnly = promptLower.includes("mcp tools only");
-    const isRagPreferred = [
-      "rag",
-      "internal",
-      "policy",
-      "support",
-      "document",
-      "guide",
-      "knowledge",
-      "help",
-      "in house",
-      "org",
-      "organization",
-      "doc",
-      "docs",
-      "documentation",
-      "knowledge base",
-      "kb",
-      "sop",
-      "handbook",
-      "opentext",
-      "open text",
-      "otex",
-      "otcs",
-      "content server",
-      "documentum",
-      "extended ecm",
-      "xecm",
-      "aviator",
-      "magellan",
-      "exstream",
-      "teamsite",
-      "appworks",
-      "fortify",
-      "arcsight",
-      "netiq",
-      "voltage",
-      "loadrunner",
-      "smax",
-    ].some(term => promptLower.includes(term));
+    const isRagPreferred = RAG_TERMS.some(term => promptLower.includes(term));
     // Direct logic
     const isDirect = !isRagOnly && !isMcpOnly && (
       /^[\d\s\+\-\*\/\(\)\.]+$/.test(activePrompt) || 
@@ -467,9 +484,139 @@ const App: React.FC = () => {
     setActiveToolName(undefined);
   };
 
+  const tryEvaluateMath = (text: string): string | null => {
+    const cleaned = text.trim();
+    if (!cleaned) return null;
+    if (!/^[0-9+\-*/^().\s]+$/.test(cleaned)) return null;
+    if (!/[0-9]/.test(cleaned)) return null;
+    const normalized = cleaned.replace(/\s+/g, '').replace(/\^/g, '**');
+    try {
+      // Safe eval: digits and operators only
+      const result = Function(`"use strict"; return (${normalized});`)();
+      if (typeof result === 'number' && Number.isFinite(result)) {
+        return `${cleaned} = ${result}`;
+      }
+    } catch {
+      return null;
+    }
+    return null;
+  };
+
+  const buildStepPath = (activePrompt: string): WorkflowStep[] => {
+    const promptLower = activePrompt.toLowerCase();
+    const isRagOnly = promptLower.includes("rag only");
+    const isMcpOnly = promptLower.includes("mcp tools only");
+    const isDirect = !isRagOnly && !isMcpOnly && (
+      /^[\d\s\+\-\*\/\(\)\.]+$/.test(activePrompt) ||
+      /^\d+[\+\-\*\/]\d+/.test(activePrompt.replace(/\s/g, '')) ||
+      ['hello', 'hi', 'hey', 'greetings'].some(s => promptLower.startsWith(s)) ||
+      (promptLower.split(' ').length < 6 && !promptLower.includes("ticket") && !promptLower.includes("status"))
+    );
+
+    const steps: WorkflowStep[] = [
+      WorkflowStep.UI_TO_LG,
+      WorkflowStep.LG_TO_LLM_PLAN,
+      WorkflowStep.LLM_TO_LG_PLAN,
+    ];
+
+    if (isDirect) {
+      steps.push(
+        WorkflowStep.LG_TO_LLM_EVAL,
+        WorkflowStep.LLM_TO_LG_EVAL,
+        WorkflowStep.LG_TO_OUT
+      );
+      return steps;
+    }
+
+    if (isMcpOnly) {
+      steps.push(WorkflowStep.LG_TO_MCP, WorkflowStep.MCP_TO_LG);
+    } else {
+      steps.push(
+        WorkflowStep.LG_TO_RAG,
+        WorkflowStep.RAG_TO_VDB,
+        WorkflowStep.VDB_TO_RAG,
+        WorkflowStep.RAG_TO_LG
+      );
+      if (!isRagOnly) {
+        steps.push(WorkflowStep.LG_TO_MCP, WorkflowStep.MCP_TO_LG);
+      }
+    }
+
+    steps.push(
+      WorkflowStep.LG_TO_LLM_EVAL,
+      WorkflowStep.LLM_TO_LG_EVAL,
+      WorkflowStep.LG_TO_OUT
+    );
+
+    return steps;
+  };
+
+  const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+  const waitWithPause = async (ms: number, runId: number) => {
+    let elapsed = 0;
+    const tick = 80;
+    while (elapsed < ms) {
+      if (runIdRef.current !== runId) return false;
+      if (isPausedRef.current) {
+        await sleep(120);
+        continue;
+      }
+      await sleep(tick);
+      elapsed += tick;
+    }
+    return runIdRef.current === runId;
+  };
+
+  const animateWorkflow = async (steps: WorkflowStep[], activePrompt: string, runId: number) => {
+    setActivePath([]);
+
+    for (const step of steps) {
+      const canContinue = await waitWithPause(520, runId);
+      if (!canContinue) return;
+
+      const meta = STEP_METADATA[step];
+      const stepDetails = meta ? getStepDetails(step, meta, activePrompt) : null;
+      const logEntry: LogEntry | null = meta && stepDetails ? {
+        id: `step_${step}_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+        type: 'EXEC',
+        message: meta.label,
+        timestamp: new Date().toLocaleTimeString(),
+        details: stepDetails.details,
+        source: meta.sourceId,
+        destination: meta.targetId,
+        inputData: stepDetails.inputData,
+        transformedData: stepDetails.transformedData,
+      } : null;
+
+      setState(prev => ({
+        ...prev,
+        currentStep: step,
+        logs: logEntry ? [...prev.logs, logEntry] : prev.logs,
+      }));
+      setActivePath(prev => [...prev, step]);
+    }
+
+    while (!backendDoneRef.current && runIdRef.current === runId) {
+      if (isPausedRef.current) {
+        await sleep(120);
+        continue;
+      }
+      await sleep(120);
+    }
+
+    if (runIdRef.current === runId) {
+      setState(prev => ({
+        ...prev,
+        currentStep: WorkflowStep.COMPLETED,
+      }));
+    }
+  };
+
   const runSimulation = async (customPrompt?: string) => {
     const activePrompt = customPrompt || prompt;
     if (!activePrompt.trim() || isSimulating) return;
+    
     const runId = ++runIdRef.current;
     toolDataRef.current = [];
     ragDataRef.current = null;
@@ -480,6 +627,10 @@ const App: React.FC = () => {
     setIsSimulating(true);
     setIsPaused(false);
     setActiveModelName("llama-3.3-70b");
+    backendDoneRef.current = false;
+
+    const stepsToAnimate = buildStepPath(activePrompt);
+    void animateWorkflow(stepsToAnimate, activePrompt, runId);
     
     // ═══ Backend API Mode (Always - System is Fully Autonomous) ═══════════════
     // The system now always uses intelligent backend routing without approval gates.
@@ -499,7 +650,13 @@ const App: React.FC = () => {
         ],
       }));
 
-      const response = await fetch('http://localhost:5001/api/run', {
+      // Create an abort controller with 30-second timeout
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => {
+        controller.abort();
+      }, 30000);
+      
+      const response = await fetch('/api/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -507,7 +664,10 @@ const App: React.FC = () => {
           enable_interrupts: false,  // Always disabled for autonomous execution
           verbose: false,
         }),
+        signal: controller.signal,
       });
+
+      clearTimeout(timeoutId);
 
       if (!response.ok) {
         throw new Error(`API error: ${response.status} ${response.statusText}`);
@@ -515,13 +675,26 @@ const App: React.FC = () => {
 
       const result = await response.json();
 
+      // Parse execution log to animate through intermediate steps
+      const executionLog = result.execution_log || [];
+
+      // Add log entries for each execution step
+      const newLogs = executionLog.map((entry: any) => ({
+        id: `exec_${Date.now()}_${Math.random()}`,
+        type: entry.type || 'SYSTEM',
+        message: entry.message || entry.step || 'Processing',
+        timestamp: new Date().toLocaleTimeString(),
+        details: entry.details || entry.output || '',
+      }));
+
       // Workflow always completes (no interrupts)
       setState(prev => ({
         ...prev,
-        currentStep: WorkflowStep.COMPLETED,
+        finalInput: activePrompt,
         finalOutput: result.final_response,
         logs: [
           ...prev.logs,
+          ...newLogs,
           {
             id: `completed_${Date.now()}`,
             type: 'SYSTEM',
@@ -533,11 +706,20 @@ const App: React.FC = () => {
       }));
 
       setActiveModelName(result.active_model || 'Backend API');
+      backendDoneRef.current = true;
       setIsSimulating(false);
       setPrompt('');
       return;
     } catch (error) {
-      console.error('Backend API call failed:', error);
+      let errorMessage = String(error);
+      if (error instanceof Error) {
+        if (error.name === 'AbortError') {
+          errorMessage = 'Request timeout - Backend is not responding (30 second timeout)';
+        } else {
+          errorMessage = error.message;
+        }
+      }
+      
       setState(prev => ({
         ...prev,
         logs: [
@@ -547,359 +729,78 @@ const App: React.FC = () => {
             type: 'SYSTEM',
             message: 'API Call Failed',
             timestamp: new Date().toLocaleTimeString(),
-            details: `${error}. Falling back to local simulation.`,
+            details: `${errorMessage}. Falling back to local simulation.`,
           },
         ],
       }));
-      // Fall through to local simulation
-    }
-    
-    // ═══ Local Frontend Simulation Mode ═══════════════════════════
-    // Removed auto-expansion of telemetry to keep it collapsed by default per user request
-    // setIsTelemetryCollapsed(false); 
-
-
-    let path: WorkflowStep[] = [
-      WorkflowStep.UI_TO_LG,
-      WorkflowStep.LG_TO_LLM_PLAN,
-      WorkflowStep.LLM_TO_LG_PLAN,
-    ];
-
-    const promptLower = activePrompt.toLowerCase();
-    
-    // ─── LangGraph Intent Classification ───────────────────────────────
-    // The orchestrator classifies query intent into categories and routes
-    // to the appropriate pipeline. The priority order is:
-    //   1. Explicit overrides ("rag only", "mcp tools only")
-    //   2. Math/computation → MCP tools
-    //   3. Greetings → Direct LLM
-    //   4. Real-time data needs (stock, weather, news) → MCP (even if OpenText-related)
-    //   5. General web-search questions about OpenText → HYBRID (RAG + MCP)
-    //   6. OpenText product/documentation queries → RAG only
-    //   7. Internal knowledge queries (policy, guide, docs) → RAG only
-    //   8. General knowledge questions → MCP web search
-    //   9. Fallback → Hybrid or Direct LLM
-    //
-    // KEY PRINCIPLE: "who is CEO of opentext?" is a FACTUAL question that
-    // benefits from both RAG context AND live web data. But "how to use
-    // Content Server REST API?" is a DOCUMENTATION question best served
-    // entirely from internal knowledge.
-
-    // 1. Explicit overrides
-    const isRagOnly = promptLower.includes("rag only");
-    const isMcpOnly = promptLower.includes("mcp tools only");
-
-    // 2. OpenText product/documentation query — specific product names & technical terms
-    //    These are best answered from internal docs (RAG)
-    const isOpenTextProductQuery = /\b(otcs|livelink|documentum|content\s*server|extended\s*ecm|xecm|x\s*ecm|core\s*content|exstream|teamsite|appworks|fortify|arcsight|netiq|voltage|encase|data\s*protector|loadrunner|load\s*runner|uft|alm\s*quality|quality\s*center|valueedge|value\s*edge|smax|idol|trading\s*grid|media\s*management|capture\s*center|info\s*archive|axcelerate|legal\s*hold|brava|hightail|enterprise\s*analyzer|cloud\s*edition|magellan)\b/.test(promptLower);
-
-    // 3. General OpenText mention — company name only, no specific product
-    //    "who is CEO of opentext?", "tell me about opentext", "opentext stock price"
-    const isOpenTextGeneral = !isOpenTextProductQuery && /\b(opentext|open\s*text|otex)\b/.test(promptLower);
-
-    // 4. Combined flag for any OpenText reference
-    const isOpenTextRelated = isOpenTextProductQuery || isOpenTextGeneral;
-
-    // 5. Aviator — could be product doc OR general depending on context
-    //    "what is aviator?" → documentation, "aviator REST API" → documentation
-    const isAviatorQuery = /\b(aviator)\b/.test(promptLower);
-    const isOpenTextDocQuery = isOpenTextProductQuery || isAviatorQuery;
-
-    // 6. RAG-preferred (internal knowledge requests — policies, guides, docs)
-    const isRagPreferred = isOpenTextDocQuery || /\b(polic(y|ies)|guide(s)?|doc(s|ument(ation)?)?|internal|knowledge(base)?|support|help(desk)?|in\s*house|organization(al)?)\b/.test(promptLower);
-
-    // 7. Real-time tool needs — these ALWAYS go to MCP, even for OpenText queries
-    //    "opentext stock price" → MCP (stock tool), "latest opentext news" → MCP (web search)
-    //    NOTE: "today"/"now" are excluded — they're temporal modifiers, not real-time data signals
-    //    "time"/"date" are excluded — handled by isMath timezone detection. "availability" excluded — too generic.
-    const needsRealtimeTools = /\b(weather|temperature|forecast|news|latest|stock|price|cap|exchange|rate|currency|live|traffic|travel\s*time|flight|flights|delay|delays|arrival|departure|gate|crypto|bitcoin|ethereum|fx|forex|score|scores|sports|standings|schedule|event|events|concert|ticket|tickets|shipping|shipment|tracking|delivery|dispatch|courier|logistics|train|rail|platform|seat|booking|pnr|eta|etd)\b/.test(promptLower);
-    
-    // 8. General knowledge / factual questions that need web search
-    //    "who is CEO of opentext?" → this IS a web-searchable question
-    //    "present opentext ceo?" → also factual (standalone "ceo" near a company name)
-    //    "opentext founder" → also factual
-    //    "microsoft headquarters" → also factual
-    const isFactualQuestion = /\b(who is|who was|who are|who runs|who leads|who manages|who owns|who founded|ceo of|president of|founder of|chairman of|head of|leader of|headquarters of|employees of|revenue of)\b/.test(promptLower) ||
-      /\b(ceo|chief\s*executive|president|founder|chairman|cto|cfo|coo|director|revenue|employees?|headquarters|hq|founded|acquired|acquisition|market\s*cap|valuation)\b/.test(promptLower);
-    const isDictionaryQuery = /\b(define|meaning of|definition|dictionary|synonym|antonym|pronounce|pronunciation|spell|spelling|what does .* mean|\w+\s+means?\??\s*$|\w+\s+meaning\??\s*$)\b/i.test(promptLower);
-    const needsWebSearch = !isRagOnly && !isMcpOnly && (
-      /^(who|what|where|when|why|how|which|whose|whom)\b/.test(promptLower) ||
-      /\b(who is|who was|who are|who runs|who leads|who manages|who owns|what is|what are|what was|what does|how to|how does|how do|how is|how are|how many|how much|why is|why do|why does|why are|tell me|explain|describe|define|meaning of|meaning\??$|means\??$|synonym|antonym|definition|dictionary|pronounce|pronunciation|spell|spelling|difference between|compare|list of|history of|founder of|ceo of|president of|capital of|population of|headquarters of|largest|smallest|tallest|oldest|newest|best|worst|fastest)\b/.test(promptLower) ||
-      /\b(present|current|new|acting|interim)\b.*\b(ceo|chief\s*executive|president|founder|chairman|cto|cfo|coo|director|leader)\b/.test(promptLower) ||
-      /\b(ceo|chief\s*executive|president|founder|chairman|cto|cfo|coo)\b.*\?\s*$/.test(promptLower) ||
-      /\b(ceo|president|founder|chairman|cto|cfo|coo|headquarters|hq|revenue|employees|founded|valuation)\b/.test(promptLower)
-    );
-    
-    // 2. Direct simple query detection (Greetings)
-    // Avoids RAG/MCP for trivial inputs like "Hi there"
-    // Guard: exclude leadership/factual terms from math/time classification
-    const hasLeadershipTerms = /\b(ceo|president|founder|chairman|cto|cfo|coo|chief\s*executive|director|leader|headquarters|hq|revenue|employees|valuation)\b/.test(promptLower);
-    const isMath = !isRagOnly && !isMcpOnly && !hasLeadershipTerms && (
-      /^[\d\s\+\-\*\/\(\)\.]+$/.test(activePrompt) || // Pure math
-      /^\d+[\+\-\*\/]\d+/.test(activePrompt.replace(/\s/g,'')) || // Embedded math
-      /\b(sqrt|sin|cos|tan|log|ln|abs|pow)\s*\(/.test(promptLower) || // Math functions
-      /\b(convert|conversion)\b.*\b(unit|units|to)\b/.test(promptLower) ||
-      /\b\d+\.?\d*\s*(km|miles?|meter|metre|meters|metres|feet|foot|ft|celsius|fahrenheit|kg|lbs?|pound|pounds|gallon|gallons|liter|liters|litre|litres)\s+to\s+(km|miles?|meter|metre|meters|metres|feet|foot|ft|celsius|fahrenheit|kg|lbs?|pound|pounds|gallon|gallons|liter|liters|litre|litres)\b/i.test(promptLower) || // Direct unit conversion
-      /(?:^|\b|\d)(celsius|fahrenheit|kelvin|mm|millimeter|millimetre|cm|centimeter|centimetre|cent|cents|meter|metre|meters|metres|km|kilometer|kilometre|inch|inches|foot|feet|ft|yard|yards|yd|mile|miles|mi|mg|milligram|gram|grams|kg|kilogram|kilograms|lb|lbs|pound|pounds|oz|ounce|ounces|ton|tons|tonne|tonnes|ml|milliliter|millilitre|liter|litre|liters|litres|gallon|gallons|gal|cup|cups|tsp|tbsp|teaspoon|tablespoon|fl\s*oz|sq\s*ft|square\s*feet|sq\s*m|square\s*meter|acre|acres|hectare|hectares|cc|cm3|m3)(?:\b|\s|\?|$)/.test(promptLower) ||
-      /\b(kwh|kilowatt\s*hour|kilowatt\s*hours|btu|btus|watt\s*hour|wh|joule|joules|calorie|calories|kcal)\b/.test(promptLower) ||
-      /\b(currency|exchange\s*rate|fx|forex)\b/.test(promptLower) ||
-      /\b(usd|eur|gbp|inr|jpy|cad|aud|cny|chf|krw|brl|mxn|sgd|hkd|nzd|sek|nok|dkk|zar|thb|myr|php|idr|try|pln|czk|huf|ron|bgn|hrk|isk|dollar|euro|pound|rupee|yen|yuan|franc|won|peso|baht|ringgit|lira|rand)\s+(to|in|into|vs)\s+(usd|eur|gbp|inr|jpy|cad|aud|cny|chf|krw|brl|mxn|sgd|hkd|nzd|sek|nok|dkk|zar|thb|myr|php|idr|try|pln|czk|huf|ron|bgn|hrk|isk|dollar|dollars|euro|euros|pound|pounds|rupee|rupees|yen|yuan|franc|won|peso|baht|ringgit|lira|rand)\b/.test(promptLower) ||
-      /\b(add|subtract|difference|days?|weeks?|months?|years?)\b.*\b(to|from|between)\b/.test(promptLower) ||
-      /\b(date|time)\s+math\b/.test(promptLower)
-    );
-    // Time/timezone queries route through MCP (WorldClock tool), not math
-    // Exclude when leadership/factual terms are present (e.g. "ceo time at opentext" is NOT a time query)
-    const isTimeQuery = !isRagOnly && !isMcpOnly && !hasLeadershipTerms && (
-      /\b(timezone|time\s*zone|utc|gmt|pst|est|cst|mst|ist|cet|jst|bst|offset)\b/i.test(promptLower) ||
-      /\b(\d{1,2}\s*(?:am|pm))\s+(utc|gmt|pst|est|cst|mst|ist|cet|jst|bst)\s+to\s+(utc|gmt|pst|est|cst|mst|ist|cet|jst|bst)\b/i.test(promptLower) ||
-      /\b(what|current|local)\s+(time|date)\b/.test(promptLower) ||
-      /\btime\s+(in|at|for)\b/.test(promptLower) ||
-      /\b(date|time)\s+(in|at|for)\b/.test(promptLower)
-    );
-    const isDirect = !isRagOnly && !isMcpOnly && (
-      ['hello', 'hi', 'hey', 'greetings'].some(s => promptLower.startsWith(s))
-    );
-
-    let reasoningText = "";
-
-    if (isRagOnly) {
-      // Explicit RAG override
-      path = [...path, WorkflowStep.LG_TO_RAG, WorkflowStep.RAG_TO_VDB, WorkflowStep.VDB_TO_RAG, WorkflowStep.RAG_TO_LG];
-      reasoningText = "Route: RAG ONLY\n\n• User explicitly requested internal knowledge.\n• Routing through Retrieval Node and Vector DB.\n• Skipping external tools.";
-    } else if (isTimeQuery) {
-      // Time/timezone → MCP (WorldClock tool)
-      path = [...path, WorkflowStep.LG_TO_MCP, WorkflowStep.MCP_TO_LG];
-      reasoningText = "Route: MCP ONLY\n\n• Time/timezone query detected.\n• Using WorldClock tool.\n• Skipping internal knowledge base.";
-    } else if (isMath) {
-      // MCP Only for verified computation
-      path = [...path, WorkflowStep.LG_TO_MCP, WorkflowStep.MCP_TO_LG];
-      reasoningText = "Route: MCP ONLY\n\n• Computation detected.\n• Using tools for exact calculation.\n• Skipping internal knowledge base.";
-    } else if (isMcpOnly) {
-      // Explicit MCP override
-      path = [...path, WorkflowStep.LG_TO_MCP, WorkflowStep.MCP_TO_LG];
-      reasoningText = "Route: MCP ONLY\n\n• User explicitly requested external tools.\n• Calling specific APIs.\n• Skipping internal knowledge base.";
-    } else if (isOpenTextRelated && needsRealtimeTools) {
-      // OpenText + real-time signal → HYBRID (RAG context + live MCP data)
-      // e.g. "opentext stock price today", "latest opentext news"
-      path = [...path, WorkflowStep.LG_TO_RAG, WorkflowStep.RAG_TO_VDB, WorkflowStep.VDB_TO_RAG, WorkflowStep.RAG_TO_LG, WorkflowStep.LG_TO_MCP, WorkflowStep.MCP_TO_LG];
-      reasoningText = "Route: HYBRID (RAG + MCP)\n\n• OpenText query with real-time data need detected.\n• Step 1: Retrieving internal context from Vector DB.\n• Step 2: Calling external tools for live data.\n• Synthesizing response from both sources.";
-    } else if (isOpenTextGeneral && (isFactualQuestion || needsWebSearch)) {
-      // General OpenText question (not product-specific) that is factual
-      // e.g. "who is CEO of opentext?", "tell me about opentext"
-      // → HYBRID: RAG has our docs, MCP can verify/supplement with live web data
-      path = [...path, WorkflowStep.LG_TO_RAG, WorkflowStep.RAG_TO_VDB, WorkflowStep.VDB_TO_RAG, WorkflowStep.RAG_TO_LG, WorkflowStep.LG_TO_MCP, WorkflowStep.MCP_TO_LG];
-      reasoningText = "Route: HYBRID (RAG + MCP)\n\n• General OpenText question detected (factual/informational).\n• Step 1: Searching internal knowledge base for cached context.\n• Step 2: Verifying with external tools (web search).\n• Combining internal docs + live sources for accurate response.";
-    } else if (isOpenTextDocQuery) {
-      // OpenText product/documentation query → RAG only (internal docs are authoritative)
-      // e.g. "Content Server REST API", "how to configure Extended ECM for SAP"
-      path = [...path, WorkflowStep.LG_TO_RAG, WorkflowStep.RAG_TO_VDB, WorkflowStep.VDB_TO_RAG, WorkflowStep.RAG_TO_LG];
-      reasoningText = "Route: RAG (Internal Documentation)\n\n• OpenText product/documentation query detected.\n• Routing through Retrieval Node → Vector DB.\n• Searching internal product documentation.\n• Internal docs are authoritative — skipping external search.";
-    } else if (isRagPreferred && !needsRealtimeTools) {
-      // Non-OpenText RAG-preferred (internal policies, guides, docs)
-      // RAG takes priority over web search when user is asking about internal knowledge
-      path = [...path, WorkflowStep.LG_TO_RAG, WorkflowStep.RAG_TO_VDB, WorkflowStep.VDB_TO_RAG, WorkflowStep.RAG_TO_LG];
-      reasoningText = "Route: RAG (Internal Knowledge)\n\n• Internal knowledge query detected.\n• Routing through Retrieval Node → Vector DB.\n• Searching internal documentation.\n• Skipping external tools.";
-    } else if (isOpenTextRelated && !needsRealtimeTools && !needsWebSearch && !isFactualQuestion) {
-      // General OpenText mention without specific intent — still use RAG for context
-      // e.g. just "opentext", "tell me about opentext"
-      path = [...path, WorkflowStep.LG_TO_RAG, WorkflowStep.RAG_TO_VDB, WorkflowStep.VDB_TO_RAG, WorkflowStep.RAG_TO_LG, WorkflowStep.LG_TO_MCP, WorkflowStep.MCP_TO_LG];
-      reasoningText = "Route: HYBRID (RAG + MCP)\n\n• OpenText reference detected.\n• Step 1: Searching internal knowledge base.\n• Step 2: Supplementing with web search.\n• Providing comprehensive response.";
-    } else if (isFactualQuestion && !isRagPreferred) {
-      // Non-OpenText factual question with leadership/company terms
-      // e.g. "microsoft ceo", "who founded tesla", "google headquarters"
-      path = [...path, WorkflowStep.LG_TO_MCP, WorkflowStep.MCP_TO_LG];
-      reasoningText = "Route: MCP → WEB SEARCH\n\n• Factual/company question detected.\n• Using web search for real-world information.\n• Skipping internal knowledge base.";
-    } else if (isDictionaryQuery) {
-      // Dictionary/definition queries should always invoke tools
-      path = [...path, WorkflowStep.LG_TO_MCP, WorkflowStep.MCP_TO_LG];
-      reasoningText = "Route: MCP ONLY\n\n• Dictionary query detected.\n• Using Dictionary tool.\n• Skipping internal knowledge base.";
-    } else if (isDirect || (!isRagPreferred && !needsRealtimeTools && !needsWebSearch && !isFactualQuestion)) {
-      // Direct / Simple (greetings, trivial)
-      reasoningText = isDirect
-        ? "Route: DIRECT LLM\n\n• Query classified as simple/direct.\n• No retrieval needed.\n• No external tools needed.\n• Resolving via LLM internal knowledge."
-        : "Route: DIRECT LLM\n\n• General question detected.\n• RAG not required.\n• No external tools needed.\n• Resolving via LLM internal knowledge.";
-    } else if (needsRealtimeTools || needsWebSearch) {
-      // MCP for real-time data OR general web search (non-OpenText)
-      path = [...path, WorkflowStep.LG_TO_MCP, WorkflowStep.MCP_TO_LG];
-      reasoningText = needsRealtimeTools
-        ? "Route: MCP ONLY\n\n• Real-time data requested.\n• Calling external tools.\n• Skipping internal knowledge base."
-        : "Route: MCP → WEB SEARCH\n\n• General knowledge question detected.\n• No specific tool matched.\n• Using web search for real-world information.\n• Skipping internal knowledge base.";
-    } else {
-      // Hybrid fallback (Default for complex)
-      path = [...path, WorkflowStep.LG_TO_RAG, WorkflowStep.RAG_TO_VDB, WorkflowStep.VDB_TO_RAG, WorkflowStep.RAG_TO_LG, WorkflowStep.LG_TO_MCP, WorkflowStep.MCP_TO_LG];
-      reasoningText = "Route: HYBRID (RAG + MCP)\n\n• Complex intent detected.\n• Retrieving context via Retrieval Node + Vector DB.\n• Executing external tools for real-time data.\n• Synthesizing full response.";
-    }
-
-    const handshakeId = `handshake_${Date.now()}`;
-    setPathReasoning(reasoningText);
-    setPathHistory(prev => [{ prompt: activePrompt, reasoning: reasoningText, logId: handshakeId }, ...prev].slice(0, 5));
-
-    path = [...path, WorkflowStep.LG_TO_LLM_EVAL, WorkflowStep.LLM_TO_LG_EVAL, WorkflowStep.LG_TO_OUT, WorkflowStep.COMPLETED];
-    setActivePath(path);
-
-
-    setState(prev => ({ 
-      ...prev, 
-      currentStep: WorkflowStep.UI_TO_LG, 
-      logs: [...prev.logs, {
-        id: handshakeId,
-        type: 'SYSTEM',
-        message: 'Handshake initiated',
-        details: `Request: "${activePrompt}"`,
-        timestamp: new Date().toLocaleTimeString()
-      }],
-      finalInput: undefined,
-      finalOutput: undefined
-    }));
-
-    const stepInterval = 1200; 
-
-    for (let i = 0; i < path.length; i++) {
-      if (runIdRef.current !== runId) {
+      const mathResult = tryEvaluateMath(activePrompt);
+      if (mathResult) {
+        setState(prev => ({
+          ...prev,
+          finalInput: activePrompt,
+          finalOutput: mathResult,
+          logs: [
+            ...prev.logs,
+            {
+              id: `fallback_math_${Date.now()}`,
+              type: 'SYSTEM',
+              message: 'Local Calculator Fallback',
+              timestamp: new Date().toLocaleTimeString(),
+              details: 'Backend unavailable. Computation evaluated locally.',
+            },
+          ],
+        }));
+        setActiveModelName('Local Calculator');
+        backendDoneRef.current = true;
         setIsSimulating(false);
+        setPrompt('');
         return;
       }
-      const step = path[i];
-      let elapsed = 0;
-      const pollFreq = 50;
-      
-      while (elapsed < stepInterval) {
-        if (runIdRef.current !== runId) {
-          setIsSimulating(false);
-          return;
-        }
-        if (isPausedRef.current) {
-          await new Promise(r => setTimeout(r, 100));
-        } else {
-          await new Promise(r => setTimeout(r, pollFreq));
-          elapsed += pollFreq;
-        }
-      }
-      
-      let aiGeneratedOutput = '';
+      try {
+        const ragResult = await runRAGPipeline(activePrompt);
+        const ragContextBlock = ragResult?.contextBlock;
+        const fallbackMessage = ragContextBlock
+          ? `Backend unavailable. Retrieved context:\n\n${ragContextBlock}`
+          : 'Backend unavailable. Please try again.';
 
-      // At the LG_TO_RAG step, execute the real RAG pipeline
-      if (step === WorkflowStep.LG_TO_RAG) {
-        try {
-          const ragResult = await runRAGPipeline(activePrompt);
-          ragDataRef.current = ragResult;
-        } catch (e) {
-          console.warn('[RAG] Pipeline failed:', e);
-          ragDataRef.current = null;
-        }
-      }
-
-      // At the LG_TO_MCP step, actually call the tools and store results
-      if (step === WorkflowStep.LG_TO_MCP && !isDirect) {
-        const toolData = await runToolsForQuery(activePrompt);
-        toolDataRef.current = toolData;
-        // Extract tool name for diagram animation
-        if (toolData.length > 0) {
-          const nameMatch = toolData[0].match(/^Tool \[(.+?)\]/);
-          setActiveToolName(nameMatch ? nameMatch[1] : undefined);
-        } else {
-          setActiveToolName(undefined);
-        }
-      }
-
-      if (step === WorkflowStep.COMPLETED) {
-        if (runIdRef.current !== runId) {
-          setIsSimulating(false);
-          return;
-        }
-        let systemPrompt = undefined;
-        let enhancedPrompt = activePrompt;
-        
-        if (isDirect) {
-           systemPrompt = "You are a precise calculation and logic engine. Meaningful, direct, and concise answers only. Do not provide explanations unless asked. Do not use conversational filler. Be brief.";
-        } else {
-           // Combine RAG context + tool results for the final synthesis
-           const toolData = toolDataRef.current;
-           const ragResult = ragDataRef.current;
-           const contextParts: string[] = [];
-
-           if (ragResult && ragResult.contextBlock) {
-             contextParts.push(`[RETRIEVED KNOWLEDGE (from RAG pipeline — ${ragResult.stats.totalDocuments} docs, ${ragResult.stats.totalChunks} chunks searched, top relevance: ${(ragResult.stats.topScore * 100).toFixed(1)}%)]\n${ragResult.contextBlock}`);
-           }
-
-           if (toolData.length > 0) {
-             contextParts.push(`[LIVE TOOL DATA (from MCP pipeline)]\n${toolData.join('\n')}`);
-           }
-
-           if (contextParts.length > 0) {
-             enhancedPrompt = `${activePrompt}\n\n${contextParts.join('\n\n')}`;
-             systemPrompt = "You are an intelligent agent with access to live data tools. You have just executed real-time APIs and/or retrieved internal documentation. CRITICAL INSTRUCTIONS:\n\n1. ALWAYS use the tool data provided below - it is CURRENT and ACCURATE (fetched seconds ago)\n2. NEVER use your training data for real-time information like exchange rates, stock prices, weather, or current events\n3. If tool data is present, it takes ABSOLUTE PRIORITY over any knowledge in your training\n4. The dates in tool output (e.g., 'as of YYYY-MM-DD') show the data is LIVE\n5. Answer directly using ONLY the provided context - do not add or invent any information\n\nProvided context and tool data:\n";
-           }
-        }
-
-        const aiResponse = await chatWithArchitect([
-          { role: 'user', content: enhancedPrompt }
-        ], systemPrompt);
-        if (runIdRef.current !== runId) {
-          setIsSimulating(false);
-          return;
-        }
-        aiGeneratedOutput = aiResponse.content;
-
-        const ragSources = (ragDataRef.current?.rerankedChunks || []).map((item) => ({
-          source: item.chunk.source,
-          score: item.score,
-        }));
-        if (ragSources.length > 0) {
-          const uniqueSources = Array.from(
-            new Map(ragSources.map((item) => [item.source, item])).values()
-          );
-          const citationBlock = uniqueSources
-            .map((item, index) => `${index + 1}. ${item.source} (${(item.score * 100).toFixed(1)}% relevance)`)
-            .join('\n');
-          aiGeneratedOutput = `${aiGeneratedOutput}\n\nSources:\n${citationBlock}`;
-        }
-        setActiveModelName(aiResponse.model);
-      }
-
-      setState(prev => {
-        const meta = STEP_METADATA[step];
-        const logId = `log_${Date.now()}_${step}`;
-        
-        // Dynamically contextualize input/output based on active user prompt
-        // Use our new helper function which handles replacements
-        // Note: getStepDetails is defined in component scope
-        const { details, inputData, transformedData } = getStepDetails(step, meta, activePrompt);
-
-        const newEntry: LogEntry = {
-          id: logId,
-          type: (meta.sourceId && meta.targetId) ? 'EXEC' : 'SYSTEM',
-          message: meta.label,
-          details: details,
-          source: meta.sourceId ? ARCHITECTURE_COMPONENTS[meta.sourceId]?.name : undefined,
-          destination: meta.targetId ? ARCHITECTURE_COMPONENTS[meta.targetId]?.name : undefined,
-          inputData: inputData,
-          transformedData: transformedData,
-          timestamp: new Date().toLocaleTimeString()
-        };
-
-        const newState = {
+        setState(prev => ({
           ...prev,
-          currentStep: step,
-          logs: [...prev.logs, newEntry]
-        };
-
-        if (step === WorkflowStep.COMPLETED) {
-          newState.finalInput = activePrompt;
-          newState.finalOutput = aiGeneratedOutput || "Architect response error.";
-          // Store output in path history for the latest entry
-          setPathHistory(prev => {
-            if (prev.length === 0) return prev;
-            const updated = [...prev];
-            updated[0] = { ...updated[0], output: aiGeneratedOutput || "Architect response error." };
-            return updated;
-          });
-          setIsSimulating(false);
-          setPrompt('');
-        }
-        
-        return newState;
-      });
+          finalInput: activePrompt,
+          finalOutput: fallbackMessage,
+          logs: [
+            ...prev.logs,
+            {
+              id: `fallback_${Date.now()}`,
+              type: 'SYSTEM',
+              message: 'Local RAG Fallback',
+              timestamp: new Date().toLocaleTimeString(),
+              details: 'Backend unavailable. Returned local RAG context only.',
+            },
+          ],
+        }));
+      } catch (fallbackError) {
+        setState(prev => ({
+          ...prev,
+          finalInput: activePrompt,
+          finalOutput: 'Backend unavailable. Please try again.',
+          logs: [
+            ...prev.logs,
+            {
+              id: `fallback_error_${Date.now()}`,
+              type: 'SYSTEM',
+              message: 'Local RAG Fallback Failed',
+              timestamp: new Date().toLocaleTimeString(),
+              details: `Fallback error: ${fallbackError}`,
+            },
+          ],
+        }));
+      } finally {
+        setActiveModelName('Local RAG Fallback');
+        backendDoneRef.current = true;
+        setIsSimulating(false);
+        setPrompt('');
+      }
+      return;
     }
   };
 
@@ -909,9 +810,9 @@ const App: React.FC = () => {
     setNodeInsight(null);
     const component = ARCHITECTURE_COMPONENTS[nodeId];
     if (component) {
-      const insightData = await getArchitectInsight(component.name, `Component: ${nodeId}. Status: ${state.currentStep || 'Idle'}. Task: ${prompt || 'None'}`);
-      setNodeInsight(insightData.content || "Failed to retrieve architect's insight.");
-      setActiveModelName(insightData.model);
+      const staticInsight = `${component.description}\n\nStatus: ${state.currentStep || 'Idle'}\nTask: ${prompt || 'None'}`;
+      setNodeInsight(staticInsight);
+      setActiveModelName('Backend (Static)');
     }
     setLoadingInsight(false);
   };
@@ -920,7 +821,7 @@ const App: React.FC = () => {
     if (!pendingWorkflow) return;
 
     try {
-      const response = await fetch(`http://localhost:5001/api/approve/${pendingWorkflow.run_id}`, {
+      const response = await fetch(`/api/approve/${pendingWorkflow.run_id}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ approved, reason: reason || (approved ? 'User approved' : 'User declined') }),
@@ -970,7 +871,6 @@ const App: React.FC = () => {
         }));
       }
     } catch (error) {
-      console.error('Approval failed:', error);
       setState(prev => ({
         ...prev,
         logs: [
@@ -1042,9 +942,16 @@ const App: React.FC = () => {
               </button>
             ) : (
               <button
-                onClick={() => runSimulation()}
+                onClick={() => {
+                  runSimulation();
+                }}
                 disabled={!prompt.trim()}
-                className="px-8 py-3 rounded-2xl font-black text-[10px] bg-blue-600 hover:bg-blue-500 text-white uppercase tracking-[0.2em] shadow-xl transition-all active:scale-95 disabled:opacity-50"
+                title={!prompt.trim() ? 'Enter a prompt to run' : 'Click to run workflow'}
+                className={`px-8 py-3 rounded-2xl font-black text-[10px] uppercase tracking-[0.2em] shadow-xl transition-all active:scale-95 ${
+                  !prompt.trim() 
+                    ? 'bg-slate-500/30 text-slate-500 cursor-not-allowed' 
+                    : 'bg-blue-600 hover:bg-blue-500 text-white cursor-pointer'
+                }`}
               >
                 RUN
               </button>
@@ -1450,9 +1357,9 @@ const App: React.FC = () => {
             >
               <span className="text-slate-600 uppercase font-black tracking-[0.3em] text-[10px]">Dashboard</span>
               <div className="flex items-center gap-1.5">
-                <div className={`w-1.5 h-1.5 rounded-full ${hasKeys ? 'bg-emerald-500' : 'bg-red-500'}`} />
-                <span className={`text-[8px] font-bold uppercase tracking-tighter ${hasKeys ? 'text-emerald-400' : 'text-red-400'}`}>
-                  Keys: {hasKeys ? 'Found' : 'Not Found'}
+                <div className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                <span className="text-[8px] font-bold uppercase tracking-tighter text-emerald-400">
+                  LLM: Backend
                 </span>
               </div>
               <div className="flex items-center gap-1.5">
@@ -1547,11 +1454,13 @@ const App: React.FC = () => {
         </div>
 
         {(state.finalInput && state.finalOutput) && (
-          <div className="fixed top-1/2 right-10 -translate-y-1/2 w-full max-w-xl bg-[#080c14]/98 border border-emerald-500/20 backdrop-blur-3xl rounded-[2.5rem] p-8 shadow-[0_50px_100px_rgba(0,0,0,0.8)] z-[200] animate-in slide-in-from-right duration-500 max-h-[85vh] overflow-y-auto custom-scrollbar">
+          <div className="fixed top-1/2 right-10 -translate-y-1/2 w-full max-w-xl bg-[#080c14]/98 border border-emerald-500/20 backdrop-blur-3xl rounded-[2.5rem] p-8 shadow-[0_50px_100px_rgba(0,0,0,0.8)] z-[300] animate-in slide-in-from-right duration-500 max-h-[85vh] overflow-y-auto custom-scrollbar">
             <div className="flex items-center gap-4 mb-6 sticky top-0 py-2">
               <div className="w-3 h-3 rounded-full bg-emerald-500 animate-pulse shadow-[0_0_12px_rgba(16,185,129,0.5)]" />
               <span className="text-[12px] font-black uppercase tracking-[0.4em] text-emerald-400">Synthesis Complete</span>
-              <button onClick={() => setState(s => ({...s, finalInput: undefined, finalOutput: undefined}))} className="ml-auto p-2.5 text-slate-600 hover:text-white transition-colors bg-white/5 rounded-2xl border border-white/5">
+              <button onClick={() => {
+                setState(s => ({...s, finalInput: undefined, finalOutput: undefined}));
+              }} className="ml-auto p-2.5 text-slate-600 hover:text-white transition-colors bg-white/5 rounded-2xl border border-white/5">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 6L6 18M6 6l12 12"/></svg>
               </button>
             </div>

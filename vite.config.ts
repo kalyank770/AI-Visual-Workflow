@@ -47,6 +47,26 @@ export default defineConfig(({ mode }) => {
         // Proxy Yahoo Finance APIs to bypass CORS restrictions in the browser.
         // When liveTools.ts fetches "/api/yahoo-search/...", Vite forwards it to Yahoo.
         proxy: {
+          '/api/run': {
+            target: 'http://localhost:5001',
+            changeOrigin: true,
+            rewrite: (path: string) => path,
+          },
+          '/api/approve': {
+            target: 'http://localhost:5001',
+            changeOrigin: true,
+            rewrite: (path: string) => path,
+          },
+          '/api/health': {
+            target: 'http://localhost:5001',
+            changeOrigin: true,
+            rewrite: (path: string) => path,
+          },
+          '/api/graph': {
+            target: 'http://localhost:5001',
+            changeOrigin: true,
+            rewrite: (path: string) => path,
+          },
           '/api/yahoo-search': {
             target: 'https://query2.finance.yahoo.com',
             changeOrigin: true,

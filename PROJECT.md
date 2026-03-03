@@ -1,0 +1,121 @@
+# AI Visual Workflow
+
+A production-ready visualizer and backend for an agentic workflow. The UI shows the flow between UI, LangGraph (LG), LLM, RAG, Vector DB (VDB), MCP tools, and Output. The backend executes the real workflow with RAG retrieval, tool execution, and LLM synthesis. The system is fully autonomous (no human approval gates).
+
+## What This Project Does
+- Visualizes an agentic workflow in a live, animated UI.
+- Runs a real LangGraph workflow with routing: RAG-only, MCP-only, Hybrid, or Direct.
+- Executes real tools for stocks, weather, currency, time, dictionary, web search, and more.
+- Uses intelligent LLM routing to choose the best model by task type, budget, and latency.
+- Supports optional Redis persistence for workflow checkpoints.
+- Provides an MCP server for external assistants to query architecture metadata.
+
+## Architecture Overview
+Frontend (React + Vite):
+- App.tsx renders the workflow diagram and telemetry logs.
+- User input is sent to the backend API.
+- If the backend fails, a minimal local RAG fallback returns retrieved context.
+
+Backend (Python + FastAPI + LangGraph):
+- Intake -> Planner -> (RAG and/or Tools) -> Synthesizer -> Output
+- Planner selects route: rag_only, mcp_only, hybrid, direct
+- RAG: TF-IDF retrieval over built-in knowledge base
+- Tools: real API calls (Yahoo Finance, Open-Meteo, Wikipedia, etc.)
+- LLM: internal Llama 3.3 70B primary, Gemini fallback
+
+MCP Server (Node.js):
+- Exposes architecture metadata tools to external assistants.
+
+## Run Locally
+
+### 1) Frontend
+```bash
+npm install
+npm run dev
+```
+
+### 2) Backend API
+```bash
+cd mcp-server
+pip install -r requirements.txt
+python langgraph_api.py
+```
+
+Default API URL: http://localhost:5001
+
+### 3) MCP Server (optional)
+```bash
+npm run mcp
+```
+
+## API Endpoints
+Backend API (FastAPI):
+- POST /api/run
+  - Body: {"prompt": "...", "run_id": null, "verbose": false, "enable_interrupts": false}
+  - Response: final_response, route, active_model, tool_results, rag_sources
+- GET /api/health
+- GET /api/graph
+
+Note: Human approval endpoints exist in code but the UI flow is fully autonomous.
+
+## LLM Routing
+The workflow uses task-based routing:
+- Task types: summarize, reason, code, creative, factual, chat, analyze
+- Budget modes: economy, balanced, quality
+- Env vars:
+  - LLM_ROUTING_ENABLED=true|false
+  - LLM_BUDGET_MODE=economy|balanced|quality
+  - LLM_MAX_LATENCY_MS=5000
+
+## Environment Variables
+Backend (.env or system):
+- INTERNAL_API_KEY (internal model)
+- GEMINI_API_KEY (fallback)
+- INTERNAL_MODEL_ENDPOINT (optional override)
+- INTERNAL_MODEL_NAME (default: llama-3.3-70b)
+- LLM_TIMEOUT (seconds)
+- HTTP_TIMEOUT (seconds)
+- REDIS_URL (optional)
+- REDIS_KEY_PREFIX (optional)
+- REDIS_STATE_TTL_SECONDS (optional)
+
+Frontend:
+- No required env vars for production UI.
+
+## Project Structure
+```
+AI-Visual-Workflow/
+├── App.tsx
+├── components/
+│   ├── AnimatedFlow.tsx
+│   └── Diagram.tsx
+├── services/
+│   └── ragService.ts          # Local RAG fallback only
+├── mcp-server/
+│   ├── langgraph_workflow.py  # Core workflow
+│   ├── langgraph_api.py       # REST API
+│   ├── index.js               # MCP server
+│   └── requirements.txt
+├── images/
+│   └── architecture-diagram.png
+├── index.html
+├── index.tsx
+├── constants.tsx
+├── types.ts
+└── package.json
+```
+
+## Notes
+- The system is fully autonomous. No human approval gates are used.
+- Frontend tool execution and frontend Gemini service have been removed for production cleanup.
+- Local RAG fallback is kept for backend outage scenarios.
+
+## Build
+```bash
+npm run build
+```
+
+## Troubleshooting
+- If backend is down: UI returns local RAG context only.
+- If Redis is not available: workflow falls back to in-memory persistence.
+- If LLM keys are missing: tools and RAG still run; LLM response uses template fallback.
