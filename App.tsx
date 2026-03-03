@@ -759,6 +759,20 @@ const App: React.FC = () => {
           return;
         }
         aiGeneratedOutput = aiResponse.content;
+
+        const ragSources = (ragDataRef.current?.rerankedChunks || []).map((item) => ({
+          source: item.chunk.source,
+          score: item.score,
+        }));
+        if (ragSources.length > 0) {
+          const uniqueSources = Array.from(
+            new Map(ragSources.map((item) => [item.source, item])).values()
+          );
+          const citationBlock = uniqueSources
+            .map((item, index) => `${index + 1}. ${item.source} (${(item.score * 100).toFixed(1)}% relevance)`)
+            .join('\n');
+          aiGeneratedOutput = `${aiGeneratedOutput}\n\nSources:\n${citationBlock}`;
+        }
         setActiveModelName(aiResponse.model);
       }
 
