@@ -206,6 +206,7 @@ const App: React.FC = () => {
   const toolDataRef = useRef<string[]>([]);
   const ragDataRef = useRef<RAGPipelineResult | null>(null);
   const [activeToolName, setActiveToolName] = useState<string | undefined>(undefined);
+  const [activeToolNames, setActiveToolNames] = useState<string[]>([]);
 
   useEffect(() => {
     isPausedRef.current = isPaused;
@@ -510,6 +511,7 @@ const App: React.FC = () => {
     toolDataRef.current = [];
     ragDataRef.current = null;
     setActiveToolName(undefined);
+    setActiveToolNames([]);
   };
 
   const tryEvaluateMath = (text: string): string | null => {
@@ -653,7 +655,48 @@ const App: React.FC = () => {
 
   const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-  const resolveMcpToolName = (apiResult: any): string | undefined => {
+  const resolveMcpToolNames = (apiResult: any): string[] => {
+    const normalizeToolName = (value: string): string | null => {
+      const normalized = value.toLowerCase().replace(/[^a-z0-9]/g, '');
+      const knownTools: Record<string, string> = {
+        stockprice: 'StockPrice',
+        weather: 'Weather',
+        news: 'News',
+        dictionary: 'Dictionary',
+        wikipedia: 'Wikipedia',
+        worldclock: 'WorldClock',
+        currency: 'Currency',
+        unitconverter: 'UnitConverter',
+        calculator: 'Calculator',
+        websearch: 'WebSearch',
+      };
+      return knownTools[normalized] || null;
+    };
+
+    const detectedTools = new Set<string>();
+
+    const executionLog = Array.isArray(apiResult?.execution_log) ? apiResult.execution_log : [];
+    const toolNode = executionLog.find((entry: any) => entry?.node === 'tools');
+    if (Array.isArray(toolNode?.tool_names)) {
+      toolNode.tool_names.forEach((name: string) => {
+        const mapped = normalizeToolName(String(name));
+        if (mapped) detectedTools.add(mapped);
+      });
+    }
+
+    const toolResults = Array.isArray(apiResult?.tool_results) ? apiResult.tool_results : [];
+    toolResults.forEach((result: string) => {
+      const nameMatch = String(result).match(/^Tool\s*\[(.+?)\]/i);
+      if (nameMatch?.[1]) {
+        const mapped = normalizeToolName(nameMatch[1]);
+        if (mapped) detectedTools.add(mapped);
+      }
+    });
+
+    if (detectedTools.size > 0) {
+      return Array.from(detectedTools);
+    }
+
     const candidates = [
       apiResult?.tool_results,
       apiResult?.execution_log,
@@ -672,14 +715,26 @@ const App: React.FC = () => {
       { id: 'Dictionary', terms: ['dictionary', 'define', 'definition'] },
       { id: 'Wikipedia', terms: ['wikipedia'] },
       { id: 'WorldClock', terms: ['worldclock', 'world clock', 'timezone', 'time zone', 'utc'] },
-      { id: 'Currency', terms: ['currency', 'exchange', 'fx'] },
-      { id: 'UnitConverter', terms: ['convert', 'conversion', 'unit'] },
+      { id: 'Currency', terms: ['currency', 'exchange', 'fx', 'usd', 'eur', 'gbp', 'inr', 'jpy'] },
+      { id: 'UnitConverter', terms: ['convert', 'conversion', 'meter', 'gram', 'inch', 'kg', 'lbs', 'mile', 'km'] },
       { id: 'Calculator', terms: ['calculator', 'calculate', 'math', 'equation', 'arithmetic'] },
       { id: 'WebSearch', terms: ['search', 'web', 'google'] },
     ];
 
-    const matched = toolMatchers.find(t => t.terms.some(term => haystack.includes(term)));
-    return matched?.id;
+    // Collect ALL matched tools, not just the first one
+    const allMatched: string[] = [];
+    for (const matcher of toolMatchers) {
+      if (matcher.terms.some(term => haystack.includes(term))) {
+        allMatched.push(matcher.id);
+      }
+    }
+
+    // Remove UnitConverter if Currency is already detected (avoid ambiguity with "convert")
+    if (allMatched.includes('Currency') && allMatched.includes('UnitConverter')) {
+      return allMatched.filter(tool => tool !== 'UnitConverter');
+    }
+
+    return allMatched.length > 0 ? allMatched : [];
   };
 
   const formatArchitectureStepLog = (
@@ -754,11 +809,11 @@ const App: React.FC = () => {
     steps: WorkflowStep[],
     activePrompt: string,
     runId: number,
-    options?: { delayMs?: number; logExec?: boolean; mcpToolName?: string }
+    options?: { delayMs?: number; logExec?: boolean; mcpToolNames?: string[] }
   ) => {
     const delayMs = options?.delayMs ?? 520;
     const logExec = options?.logExec ?? true;
-    const mcpToolName = options?.mcpToolName;
+    const mcpToolNames = options?.mcpToolNames || [];
 
     setActivePath([]);
 
@@ -767,9 +822,12 @@ const App: React.FC = () => {
       if (runIdRef.current !== runId) return false;
 
       if (step === WorkflowStep.LG_TO_MCP || step === WorkflowStep.MCP_TO_LG) {
-        setActiveToolName(mcpToolName || 'Calculator');
+        // Set all tool names for compound queries
+        setActiveToolNames(mcpToolNames.length > 0 ? mcpToolNames : ['Calculator']);
+        setActiveToolName(mcpToolNames.length > 0 ? mcpToolNames[0] : 'Calculator');
       } else {
         setActiveToolName(undefined);
+        setActiveToolNames([]);
       }
 
       const meta = STEP_METADATA[step];
@@ -801,6 +859,7 @@ const App: React.FC = () => {
     }
 
     setActiveToolName(undefined);
+    setActiveToolNames([]);
 
     if (runIdRef.current === runId) {
       setState(prev => ({
@@ -880,7 +939,7 @@ const App: React.FC = () => {
 
       const result = await response.json();
       toolDataRef.current = Array.isArray(result.tool_results) ? result.tool_results : [];
-      const activeMcpTool = resolveMcpToolName(result);
+      const activeMcpTools = resolveMcpToolNames(result);
 
       // Parse execution log to animate through intermediate steps
       const executionLog = result.execution_log || [];
@@ -933,7 +992,7 @@ const App: React.FC = () => {
         return updated;
       });
 
-      const animationCompleted = await animateWorkflow(expectedSteps, activePrompt, runId, { delayMs: 850, logExec: false, mcpToolName: activeMcpTool });
+      const animationCompleted = await animateWorkflow(expectedSteps, activePrompt, runId, { delayMs: 850, logExec: false, mcpToolNames: activeMcpTools });
       if (animationCompleted && runIdRef.current === runId) {
         setShowFinalOutput(true);
       }
@@ -993,7 +1052,7 @@ const App: React.FC = () => {
           updated[0] = { prompt: activePrompt, reasoning: analysisText, logId: fallbackLogId, output: mathResult };
           return updated;
         });
-        const animationCompleted = await animateWorkflow(fallbackSteps, activePrompt, runId, { delayMs: 850, logExec: false, mcpToolName: 'Calculator' });
+        const animationCompleted = await animateWorkflow(fallbackSteps, activePrompt, runId, { delayMs: 850, logExec: false, mcpToolNames: ['Calculator'] });
         if (animationCompleted && runIdRef.current === runId) {
           setShowFinalOutput(true);
         }
@@ -1035,7 +1094,7 @@ const App: React.FC = () => {
           updated[0] = { prompt: activePrompt, reasoning: analysisText, logId: fallbackLogId, output: fallbackMessage };
           return updated;
         });
-        const animationCompleted = await animateWorkflow(fallbackSteps, activePrompt, runId, { delayMs: 850, logExec: false, mcpToolName: 'WebSearch' });
+        const animationCompleted = await animateWorkflow(fallbackSteps, activePrompt, runId, { delayMs: 850, logExec: false, mcpToolNames: ['WebSearch'] });
         if (animationCompleted && runIdRef.current === runId) {
           setShowFinalOutput(true);
         }
@@ -1066,7 +1125,7 @@ const App: React.FC = () => {
           updated[0] = { prompt: activePrompt, reasoning: analysisText, logId: fallbackLogId, output: 'Backend unavailable. Please try again.' };
           return updated;
         });
-        const animationCompleted = await animateWorkflow(fallbackSteps, activePrompt, runId, { delayMs: 850, logExec: false, mcpToolName: 'WebSearch' });
+        const animationCompleted = await animateWorkflow(fallbackSteps, activePrompt, runId, { delayMs: 850, logExec: false, mcpToolNames: ['WebSearch'] });
         if (animationCompleted && runIdRef.current === runId) {
           setShowFinalOutput(true);
         }
@@ -1280,6 +1339,7 @@ const App: React.FC = () => {
             isFullscreen={isFullscreen}
             onToggleFullscreen={() => setIsFullscreen(prev => !prev)}
             activeToolName={activeToolName}
+            activeToolNames={activeToolNames}
           />
           
           {activePayloadDetail && (

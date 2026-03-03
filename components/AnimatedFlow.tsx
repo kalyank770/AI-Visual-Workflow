@@ -13,6 +13,7 @@ interface AnimatedFlowProps {
   isFullscreen: boolean;
   onToggleFullscreen: () => void;
   activeToolName?: string;
+  activeToolNames?: string[];
 }
 
 const MCP_TOOLS = [
@@ -28,7 +29,7 @@ const MCP_TOOLS = [
   { id: 'WebSearch', label: 'Web Search', icon: '🔍' },
 ];
 
-const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, onPayloadClick, isPaused, prompt, isDarkMode = true, isFullscreen, onToggleFullscreen, activeToolName }) => {
+const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, onPayloadClick, isPaused, prompt, isDarkMode = true, isFullscreen, onToggleFullscreen, activeToolName, activeToolNames }) => {
   // Center diagram in viewport: scale 0.6 fits height < 600px, x/y offsets center content (775, 465)
   const [transform, setTransform] = useState({ x: 200, y: 30, scale: 0.6 });
   const isDragging = useRef(false);
@@ -598,7 +599,7 @@ const AnimatedFlow: React.FC<AnimatedFlowProps> = ({ currentStep, onNodeClick, o
 
           {/* MCP Tool Satellite Nodes */}
           {mcpToolNodes.map((tool) => {
-            const isActive = activeToolName === tool.id && 
+            const isActive = (activeToolName === tool.id || (activeToolNames && activeToolNames.includes(tool.id))) && 
               (currentStep === WorkflowStep.LG_TO_MCP || currentStep === WorkflowStep.MCP_TO_LG);
             const mcpX = 400;
             const mcpBottomY = 882; // Just below MCP box bottom edge
