@@ -444,9 +444,36 @@ const App: React.FC = () => {
   const openLogEntry = (logId: string) => {
     setIsTelemetryCollapsed(false);
     setTimeout(() => {
-      const target = document.getElementById(`log-${logId}`);
+      const targetIndex = state.logs.findIndex(log => log.id === logId);
+      let targetLogId = logId;
+
+      if (targetIndex >= 0) {
+        const runStartMessages = new Set([
+          'Calling Backend Workflow API',
+          'API Call Failed',
+          'Handshake initiated',
+        ]);
+
+        let runStartIndex = 0;
+
+        for (let i = targetIndex; i >= 0; i--) {
+          const candidate = state.logs[i];
+          if (runStartMessages.has(candidate.message)) {
+            targetLogId = candidate.id;
+            runStartIndex = i;
+            break;
+          }
+        }
+
+        const firstExec = state.logs.slice(runStartIndex, targetIndex + 1).find(log => log.type === 'EXEC');
+        if (firstExec) {
+          targetLogId = firstExec.id;
+        }
+      }
+
+      const target = document.getElementById(`log-${targetLogId}`);
       if (target) {
-        setHighlightedLogId(logId);
+        setHighlightedLogId(targetLogId);
         target.scrollIntoView({ behavior: 'smooth', block: 'start' });
         setTimeout(() => setHighlightedLogId(null), 3500);
       }
@@ -655,6 +682,59 @@ const App: React.FC = () => {
     return matched?.id;
   };
 
+  const formatArchitectureStepLog = (
+    step: WorkflowStep,
+    activePrompt: string,
+    index: number,
+    executionLog: any[]
+  ): LogEntry | null => {
+    const meta = STEP_METADATA[step];
+    if (!meta || !meta.sourceId || !meta.targetId) return null;
+
+    const stepDetails = getStepDetails(step, meta, activePrompt);
+    const ragEntry = executionLog.find((entry: any) => entry?.node === 'rag');
+    const toolEntry = executionLog.find((entry: any) => entry?.node === 'tools');
+    const plannerEntry = executionLog.find((entry: any) => entry?.node === 'planner');
+    const synthEntry = executionLog.find((entry: any) => entry?.node === 'synthesizer');
+
+    let details = stepDetails.details;
+
+    if (step === WorkflowStep.LLM_TO_LG_PLAN && plannerEntry?.reasoning) {
+      details = `${details} | Planner reasoning: ${plannerEntry.reasoning}`;
+    }
+
+    if ((step === WorkflowStep.RAG_TO_VDB || step === WorkflowStep.VDB_TO_RAG || step === WorkflowStep.RAG_TO_LG) && ragEntry) {
+      const chunks = typeof ragEntry.chunks_found === 'number' ? ragEntry.chunks_found : 0;
+      const searchTime = typeof ragEntry.search_time_ms === 'number' ? `${ragEntry.search_time_ms}ms` : 'n/a';
+      details = `${details} | RAG Stats: chunks=${chunks}, search=${searchTime}`;
+    }
+
+    if ((step === WorkflowStep.LG_TO_MCP || step === WorkflowStep.MCP_TO_LG) && toolEntry) {
+      const count = typeof toolEntry.tools_executed === 'number' ? toolEntry.tools_executed : 0;
+      const toolNames = Array.isArray(toolEntry.tool_names) ? toolEntry.tool_names.join(', ') : 'none';
+      const execTime = typeof toolEntry.execution_time_ms === 'number' ? `${toolEntry.execution_time_ms}ms` : 'n/a';
+      details = `${details} | Tool Stats: count=${count}, names=[${toolNames}], time=${execTime}`;
+    }
+
+    if (step === WorkflowStep.LLM_TO_LG_EVAL && synthEntry) {
+      const model = synthEntry.model || 'unknown';
+      const length = typeof synthEntry.response_length === 'number' ? `${synthEntry.response_length} chars` : 'generated';
+      details = `${details} | Synthesized by ${model} (${length})`;
+    }
+
+    return {
+      id: `exec_${Date.now()}_${index}_${Math.random().toString(16).slice(2)}`,
+      type: 'EXEC',
+      message: meta.label,
+      timestamp: new Date().toLocaleTimeString(),
+      details,
+      source: ARCHITECTURE_COMPONENTS[meta.sourceId]?.name || meta.sourceId,
+      destination: ARCHITECTURE_COMPONENTS[meta.targetId]?.name || meta.targetId,
+      inputData: stepDetails.inputData,
+      transformedData: stepDetails.transformedData,
+    };
+  };
+
   const waitWithPause = async (ms: number, runId: number) => {
     let elapsed = 0;
     const tick = 80;
@@ -799,19 +879,17 @@ const App: React.FC = () => {
       }
 
       const result = await response.json();
+      toolDataRef.current = Array.isArray(result.tool_results) ? result.tool_results : [];
       const activeMcpTool = resolveMcpToolName(result);
 
       // Parse execution log to animate through intermediate steps
       const executionLog = result.execution_log || [];
 
-      // Add log entries for each execution step
-      const newLogs = executionLog.map((entry: any) => ({
-        id: `exec_${Date.now()}_${Math.random()}`,
-        type: entry.type || 'SYSTEM',
-        message: entry.message || entry.step || 'Processing',
-        timestamp: new Date().toLocaleTimeString(),
-        details: entry.details || entry.output || '',
-      }));
+      // Add architecture transition logs with beginner-friendly data transformations
+      const expectedSteps = buildStepPathFromRoute(result.route);
+      const newLogs = expectedSteps
+        .map((step, index) => formatArchitectureStepLog(step, activePrompt, index, executionLog))
+        .filter((entry): entry is LogEntry => Boolean(entry));
 
       // Workflow always completes (no interrupts)
       const completedLogId = `completed_${Date.now()}`;
@@ -855,7 +933,6 @@ const App: React.FC = () => {
         return updated;
       });
 
-      const expectedSteps = buildStepPathFromRoute(result.route);
       const animationCompleted = await animateWorkflow(expectedSteps, activePrompt, runId, { delayMs: 850, logExec: false, mcpToolName: activeMcpTool });
       if (animationCompleted && runIdRef.current === runId) {
         setShowFinalOutput(true);
