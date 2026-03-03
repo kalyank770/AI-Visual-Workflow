@@ -61,7 +61,6 @@ const App: React.FC = () => {
   const [isPaused, setIsPaused] = useState(false);
   const [isTelemetryCollapsed, setIsTelemetryCollapsed] = useState(true);
   const [activePayloadDetail, setActivePayloadDetail] = useState<LogEntry | null>(null);
-  const [activeLogicPanel, setActiveLogicPanel] = useState<any | null>(null);
   const [pathReasoning, setPathReasoning] = useState<string | null>(null);
   const [pathHistory, setPathHistory] = useState<{ prompt: string; reasoning: string; logId: string; output?: string }[]>([]);
   const [highlightedLogId, setHighlightedLogId] = useState<string | null>(null);
@@ -167,38 +166,6 @@ const App: React.FC = () => {
     }
   }, [isDarkMode]);
 
-  const logicPanels = [
-    {
-      id: 'rag-only',
-      title: 'Only RAG Flow Path',
-      description: 'Targeted for proprietary knowledge retrieval. Skips external MCP to maintain data gravity.',
-      path: 'UI → LG → Retrieval → VDB',
-      details: 'This architectural pattern prioritizes data sovereignty and internal knowledge base retrieval. It bypasses external tool execution (MCP) to ensure that sensitive data remains within the controlled environment. Ideal for answering questions based solely on indexed documentation.',
-      color: 'text-blue-400',
-      borderColor: 'border-blue-500/20',
-      bgColor: 'bg-blue-500/10'
-    },
-    {
-      id: 'mcp-only',
-      title: 'Only MCP Flow Path',
-      description: 'Targeted for real-time external tool orchestration via standardized interface.',
-      path: 'UI → LG → MCP → LG',
-      details: 'Focuses on action execution and real-time data fetching from external systems. This pattern bypasses the internal knowledge base (RAG) to reduce latency when only tool interaction is required, such as checking stock prices or controlling IoT devices.',
-      color: 'text-amber-400',
-      borderColor: 'border-amber-500/20',
-      bgColor: 'bg-amber-500/10'
-    },
-    {
-      id: 'hybrid',
-      title: 'Hybrid RAG + MCP Path',
-      description: 'The optimal agentic cycle. Combines retrieved context with real-time tool execution.',
-      path: 'UI → LG → Retrieval → VDB → LG → MCP → LG',
-      details: 'This is the most comprehensive pattern, leveraging both internal knowledge (RAG) for context and external tools (MCP) for action. It enables complex reasoning where the agent first retrieves relevant policy or history, then uses that information to parameterize external API calls.',
-      color: 'text-emerald-400',
-      borderColor: 'border-emerald-500/20',
-      bgColor: 'bg-emerald-500/10'
-    }
-  ];
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const isPausedRef = useRef(isPaused);
@@ -261,7 +228,7 @@ const App: React.FC = () => {
   }, [state.finalOutput, state.finalInput]);
 
   // Smarter contextualization based on prompt type
-  const getStepDetails = (step: WorkflowStep, meta: any, activePrompt: string) => {
+  const getStepDetails = (step: WorkflowStep, meta: any, activePrompt: string, finalOutput?: string) => {
     let inputData = meta.inputData;
     let transformedData = meta.transformedData;
     
@@ -355,9 +322,15 @@ const App: React.FC = () => {
       case WorkflowStep.LLM_TO_LG_EVAL:
         simpleTransformation = "LLM writes the final response in plain language.";
         break;
-      case WorkflowStep.LG_TO_OUT:
-        simpleTransformation = "System streams the response to the screen in small chunks.";
+      case WorkflowStep.LG_TO_OUT: {
+        if (finalOutput) {
+          const trimmedOutput = finalOutput.replace(/\r\n/g, "\n").trim();
+          simpleTransformation = `"${trimmedOutput}"`;
+        } else {
+          simpleTransformation = "System streams the response to the screen in small chunks.";
+        }
         break;
+      }
       case WorkflowStep.COMPLETED:
         simpleTransformation = `Cycle Complete. final_state = "WAITING"`;
         break;
@@ -451,19 +424,6 @@ const App: React.FC = () => {
       inputData: processTemplate(inputData, replacements),
       transformedData: processTemplate(transformedData, replacements)
     };
-  };
-
-  const clearLogs = () => {
-    setState(prev => ({
-      ...prev,
-      logs: [{ 
-        id: `clear_${Date.now()}`, 
-        type: 'SYSTEM', 
-        message: 'Telemetry Purged', 
-        timestamp: new Date().toLocaleTimeString(),
-        details: 'Trace history wiped. Ready for fresh cycle.' 
-      }]
-    }));
   };
 
   const openLogEntry = (logId: string) => {
@@ -766,12 +726,13 @@ const App: React.FC = () => {
     step: WorkflowStep,
     activePrompt: string,
     index: number,
-    executionLog: any[]
+    executionLog: any[],
+    finalOutput?: string
   ): LogEntry | null => {
     const meta = STEP_METADATA[step];
     if (!meta || !meta.sourceId || !meta.targetId) return null;
 
-    const stepDetails = getStepDetails(step, meta, activePrompt);
+    const stepDetails = getStepDetails(step, meta, activePrompt, finalOutput);
     const ragEntry = executionLog.find((entry: any) => entry?.node === 'rag');
     const toolEntry = executionLog.find((entry: any) => entry?.node === 'tools');
     const plannerEntry = executionLog.find((entry: any) => entry?.node === 'planner');
@@ -934,7 +895,7 @@ const App: React.FC = () => {
             type: 'SYSTEM',
             message: 'Calling Backend Workflow API',
             timestamp: new Date().toLocaleTimeString(),
-            details: `Query: "${activePrompt}" | Mode: Autonomous (no approvals)`,
+            details: `Query: "${activePrompt}"`,
           },
         ],
       }));
@@ -972,7 +933,7 @@ const App: React.FC = () => {
       // Add architecture transition logs with beginner-friendly data transformations
       const expectedSteps = buildStepPathFromRoute(result.route);
       const newLogs = expectedSteps
-        .map((step, index) => formatArchitectureStepLog(step, activePrompt, index, executionLog))
+        .map((step, index) => formatArchitectureStepLog(step, activePrompt, index, executionLog, result.final_response))
         .filter((entry): entry is LogEntry => Boolean(entry));
 
       // Workflow always completes (no interrupts)
@@ -991,7 +952,7 @@ const App: React.FC = () => {
             type: 'SYSTEM',
             message: 'Workflow Completed',
             timestamp: new Date().toLocaleTimeString(),
-            details: `Route: ${result.route || 'unknown'} | Model: ${result.active_model || 'unknown'}`,
+            details: `Route: ${result.route || 'unknown'}`,
           },
         ],
       }));
@@ -1437,60 +1398,6 @@ const App: React.FC = () => {
             </div>
           )}
 
-          {activeLogicPanel && (
-            <div className={`fixed inset-0 ${isDarkMode ? 'bg-[#020617]/70' : 'bg-slate-200/50'} backdrop-blur-2xl z-[300] flex items-center justify-center p-6 md:p-12 animate-in fade-in duration-300`}>
-              <div className={`w-full max-w-2xl ${isDarkMode ? 'bg-[#0b1120]' : 'bg-white'} border ${activeLogicPanel.borderColor} rounded-[2.5rem] shadow-[0_0_100px_rgba(0,0,0,0.5)] p-6 md:p-10 relative overflow-hidden`}>
-                <div className={`absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent ${activeLogicPanel.bgColor.replace('bg-', 'via-').replace('/10', '')} to-transparent opacity-80`} />
-                
-                <div className="flex justify-between items-start mb-8">
-                  <div>
-                    <h3 className="text-xs font-black uppercase tracking-[0.4em] text-slate-500">Logic Pattern Inspector</h3>
-                    <h2 className={`text-2xl font-black ${activeLogicPanel.color} mt-2`}>{activeLogicPanel.title}</h2>
-                  </div>
-                  <button 
-                    onClick={() => setActiveLogicPanel(null)}
-                    className={`p-3 ${isDarkMode ? 'bg-white/5 hover:bg-white/10 hover:text-white' : 'bg-slate-100 hover:bg-slate-200 hover:text-slate-900'} rounded-2xl transition-all text-slate-400 group border border-transparent`}
-                  >
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" className="group-hover:rotate-90 transition-transform">
-                      <path d="M18 6L6 18M6 6l12 12"/>
-                    </svg>
-                  </button>
-                </div>
-
-                <div className="space-y-6">
-                  <div className={`p-5 ${isDarkMode ? 'bg-slate-950/40 border-white/5' : 'bg-slate-50 border-slate-200'} rounded-2xl border`}>
-                    <h4 className="text-xs font-black uppercase text-slate-500 mb-2 tracking-widest">Execution Path</h4>
-                    <p className={`text-base font-mono ${isDarkMode ? 'text-white/90' : 'text-slate-800'}`}>{activeLogicPanel.path}</p>
-                  </div>
-
-                  <div>
-                    <h4 className="text-xs font-black uppercase text-slate-500 mb-3 tracking-widest">Strategic Overview</h4>
-                    <p className={`text-base ${isDarkMode ? 'text-slate-300' : 'text-slate-600'} leading-relaxed font-medium`}>
-                      {activeLogicPanel.details}
-                    </p>
-                  </div>
-
-                </div>
-
-                <div className={`mt-8 pt-6 border-t ${isDarkMode ? 'border-white/5' : 'border-slate-200'} flex justify-between items-center`}>
-                   <p className="text-xs text-slate-600 font-bold uppercase tracking-widest">Pattern ID: {activeLogicPanel.id.toUpperCase()}</p>
-                   <button 
-                     onClick={() => {
-                        const prompt = activeLogicPanel.id === 'rag-only' ? "Perform internal knowledge retrieval via RAG only." : 
-                                       activeLogicPanel.id === 'mcp-only' ? "Execute external API calls via MCP tools only." :
-                                       "Complete hybrid synthesis using both RAG and MCP.";
-                        setActiveLogicPanel(null);
-                        runSimulation(prompt);
-                     }}
-                     className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest ${isDarkMode ? 'bg-white/5 hover:bg-white/10 text-white border-white/10' : 'bg-slate-100 hover:bg-slate-200 text-slate-900 border-slate-200'} border transition-all`}
-                   >
-                      Initialize This Pattern
-                   </button>
-                </div>
-              </div>
-            </div>
-          )}
-
           {/* Approval Modal Hidden - System is fully autonomous (no human interactions) */}
           {false && pendingWorkflow && (
             <div className={`fixed inset-0 ${isDarkMode ? 'bg-[#020617]/80' : 'bg-slate-200/60'} backdrop-blur-2xl z-[400] flex items-center justify-center p-6 md:p-12 animate-in fade-in duration-300`}>
@@ -1716,7 +1623,7 @@ const App: React.FC = () => {
               className="flex items-center gap-4 cursor-pointer"
               onClick={() => setIsTelemetryCollapsed(!isTelemetryCollapsed)}
             >
-              <span className="text-slate-600 uppercase font-black tracking-[0.3em] text-[10px]">Dashboard</span>
+              <span className="text-slate-600 uppercase font-black tracking-[0.3em] text-[10px]">Flow Activity Tracking</span>
               <div className="flex items-center gap-1.5">
                 <div className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
                 <span className="text-[8px] font-bold uppercase tracking-tighter text-emerald-400">
@@ -1730,14 +1637,6 @@ const App: React.FC = () => {
             </div>
             
             <div className="flex items-center gap-4">
-               {!isTelemetryCollapsed && (
-                 <button 
-                  onClick={clearLogs}
-                  className="px-3 py-1 rounded bg-red-500/10 border border-red-500/20 text-[8px] font-black text-red-400 hover:bg-red-500/20 transition-all uppercase tracking-widest"
-                 >
-                   Clear Trace
-                 </button>
-               )}
                <button 
                  onClick={() => setIsTelemetryCollapsed(!isTelemetryCollapsed)}
                  className="text-slate-500 hover:text-white"
@@ -1792,24 +1691,6 @@ const App: React.FC = () => {
                 </div>
               </div>
               
-              <div className={`flex-none w-[260px] p-5 flex flex-col overflow-y-auto custom-scrollbar ${isDarkMode ? 'bg-slate-900/20' : 'bg-slate-50'}`}>
-                <div className="flex flex-col items-start space-y-4">
-                  {logicPanels.map((panel) => (
-                    <div 
-                      key={panel.id}
-                      onClick={() => setActiveLogicPanel(panel)}
-                      className={`p-3 w-fit max-w-[240px] ${isDarkMode ? 'bg-slate-950/40 border-white/5 hover:bg-slate-900/60 hover:border-white/10' : 'bg-white border-slate-200 hover:bg-slate-50 hover:border-blue-200'} rounded-xl border cursor-pointer transition-all select-none group`}
-                    >
-                      <h5 className={`text-xs ${panel.color.replace('text-','text-')} font-black uppercase mb-1 group-hover:underline decoration-white/20 underline-offset-2`}>{panel.title}</h5>
-                      <div className="max-h-0 opacity-0 overflow-hidden transition-all duration-300 group-hover:max-h-24 group-hover:opacity-100">
-                        <p className="text-[10px] text-slate-400 leading-normal font-mono mb-1">{panel.path}</p>
-                        <p className="text-[10px] text-slate-500 leading-normal italic">{panel.description}</p>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
             </div>
           )}
         </div>
