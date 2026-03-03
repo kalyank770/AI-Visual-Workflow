@@ -68,6 +68,7 @@ const App: React.FC = () => {
   const [activePath, setActivePath] = useState<WorkflowStep[]>([]);
   const [activeModelName, setActiveModelName] = useState<string>("Llama 3.3 70B");
   const [pathOutputView, setPathOutputView] = useState<{ prompt: string; output: string } | null>(null);
+  const [showFinalOutput, setShowFinalOutput] = useState(false);
   const [isDarkMode, setIsDarkMode] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [enableInterrupts, setEnableInterrupts] = useState(false);
@@ -205,7 +206,6 @@ const App: React.FC = () => {
   const toolDataRef = useRef<string[]>([]);
   const ragDataRef = useRef<RAGPipelineResult | null>(null);
   const [activeToolName, setActiveToolName] = useState<string | undefined>(undefined);
-  const backendDoneRef = useRef(false);
 
   useEffect(() => {
     isPausedRef.current = isPaused;
@@ -479,6 +479,7 @@ const App: React.FC = () => {
     setPathHistory([]);
     setActivePath([]);
     setActiveModelName("Llama 3.3 70B");
+    setShowFinalOutput(false);
     toolDataRef.current = [];
     ragDataRef.current = null;
     setActiveToolName(undefined);
@@ -551,7 +552,108 @@ const App: React.FC = () => {
     return steps;
   };
 
+  const buildStepPathFromRoute = (route?: string): WorkflowStep[] => {
+    const normalizedRoute = (route || '').toLowerCase();
+    const steps: WorkflowStep[] = [
+      WorkflowStep.UI_TO_LG,
+      WorkflowStep.LG_TO_LLM_PLAN,
+      WorkflowStep.LLM_TO_LG_PLAN,
+    ];
+
+    if (normalizedRoute === 'direct') {
+      steps.push(
+        WorkflowStep.LG_TO_LLM_EVAL,
+        WorkflowStep.LLM_TO_LG_EVAL,
+        WorkflowStep.LG_TO_OUT
+      );
+      return steps;
+    }
+
+    if (normalizedRoute === 'mcp_only') {
+      steps.push(WorkflowStep.LG_TO_MCP, WorkflowStep.MCP_TO_LG);
+    } else {
+      steps.push(
+        WorkflowStep.LG_TO_RAG,
+        WorkflowStep.RAG_TO_VDB,
+        WorkflowStep.VDB_TO_RAG,
+        WorkflowStep.RAG_TO_LG
+      );
+      if (normalizedRoute !== 'rag_only') {
+        steps.push(WorkflowStep.LG_TO_MCP, WorkflowStep.MCP_TO_LG);
+      }
+    }
+
+    steps.push(
+      WorkflowStep.LG_TO_LLM_EVAL,
+      WorkflowStep.LLM_TO_LG_EVAL,
+      WorkflowStep.LG_TO_OUT
+    );
+
+    return steps;
+  };
+
+  const buildPathAnalysis = (route: string | undefined, reasoning: string | undefined, steps: WorkflowStep[]) => {
+    const routeLabelMap: Record<string, { label: string; fallback: string }> = {
+      rag_only: { label: 'RAG Only', fallback: 'Internal knowledge retrieval prioritized.' },
+      mcp_only: { label: 'MCP Only', fallback: 'External tool execution prioritized.' },
+      hybrid: { label: 'Hybrid', fallback: 'Retrieval plus tool execution for best coverage.' },
+      direct: { label: 'Direct', fallback: 'Simple request resolved without tools or retrieval.' },
+    };
+    const normalizedRoute = (route || '').toLowerCase();
+    const routeMeta = routeLabelMap[normalizedRoute] || { label: 'Hybrid', fallback: 'Standard agentic execution path.' };
+
+    const componentPath: string[] = [];
+    steps.forEach(step => {
+      const meta = STEP_METADATA[step];
+      if (!meta) return;
+      if (meta.sourceId && componentPath[componentPath.length - 1] !== meta.sourceId) {
+        componentPath.push(meta.sourceId);
+      }
+      if (meta.targetId && componentPath[componentPath.length - 1] !== meta.targetId) {
+        componentPath.push(meta.targetId);
+      }
+    });
+
+    const reasonLine = (reasoning || '').trim() || routeMeta.fallback;
+    const pathLine = componentPath.length > 0 ? componentPath.join(' -> ') : 'UI -> LG -> OUT';
+
+    return [
+      `Route: ${routeMeta.label}`,
+      `Why this path\n${reasonLine}`,
+      `Execution sequence\n${pathLine}`,
+    ].join('\n\n');
+  };
+
   const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+  const resolveMcpToolName = (apiResult: any): string | undefined => {
+    const candidates = [
+      apiResult?.tool_results,
+      apiResult?.execution_log,
+      apiResult?.final_response,
+    ];
+    const haystack = candidates
+      .filter(Boolean)
+      .map(item => (typeof item === 'string' ? item : JSON.stringify(item)))
+      .join(' ')
+      .toLowerCase();
+
+    const toolMatchers: Array<{ id: string; terms: string[] }> = [
+      { id: 'StockPrice', terms: ['stock', 'price', 'ticker', 'quote'] },
+      { id: 'Weather', terms: ['weather', 'temperature', 'forecast'] },
+      { id: 'News', terms: ['news', 'headline'] },
+      { id: 'Dictionary', terms: ['dictionary', 'define', 'definition'] },
+      { id: 'Wikipedia', terms: ['wikipedia'] },
+      { id: 'WorldClock', terms: ['worldclock', 'world clock', 'timezone', 'time zone', 'utc'] },
+      { id: 'Currency', terms: ['currency', 'exchange', 'fx'] },
+      { id: 'UnitConverter', terms: ['convert', 'conversion', 'unit'] },
+      { id: 'Calculator', terms: ['calculator', 'calculate', 'math', 'equation', 'arithmetic'] },
+      { id: 'WebSearch', terms: ['search', 'web', 'google'] },
+    ];
+
+    const matched = toolMatchers.find(t => t.terms.some(term => haystack.includes(term)));
+    return matched?.id;
+  };
 
   const waitWithPause = async (ms: number, runId: number) => {
     let elapsed = 0;
@@ -568,16 +670,31 @@ const App: React.FC = () => {
     return runIdRef.current === runId;
   };
 
-  const animateWorkflow = async (steps: WorkflowStep[], activePrompt: string, runId: number) => {
+  const animateWorkflow = async (
+    steps: WorkflowStep[],
+    activePrompt: string,
+    runId: number,
+    options?: { delayMs?: number; logExec?: boolean; mcpToolName?: string }
+  ) => {
+    const delayMs = options?.delayMs ?? 520;
+    const logExec = options?.logExec ?? true;
+    const mcpToolName = options?.mcpToolName;
+
     setActivePath([]);
 
-    for (const step of steps) {
-      const canContinue = await waitWithPause(520, runId);
-      if (!canContinue) return;
+    for (let index = 0; index < steps.length; index++) {
+      const step = steps[index];
+      if (runIdRef.current !== runId) return false;
+
+      if (step === WorkflowStep.LG_TO_MCP || step === WorkflowStep.MCP_TO_LG) {
+        setActiveToolName(mcpToolName || 'Calculator');
+      } else {
+        setActiveToolName(undefined);
+      }
 
       const meta = STEP_METADATA[step];
       const stepDetails = meta ? getStepDetails(step, meta, activePrompt) : null;
-      const logEntry: LogEntry | null = meta && stepDetails ? {
+      const logEntry: LogEntry | null = logExec && meta && stepDetails ? {
         id: `step_${step}_${Date.now()}_${Math.random().toString(16).slice(2)}`,
         type: 'EXEC',
         message: meta.label,
@@ -595,22 +712,25 @@ const App: React.FC = () => {
         logs: logEntry ? [...prev.logs, logEntry] : prev.logs,
       }));
       setActivePath(prev => [...prev, step]);
+
+      const shouldHold = index < steps.length - 1 || step === WorkflowStep.LG_TO_OUT;
+      if (shouldHold) {
+        const canContinue = await waitWithPause(delayMs, runId);
+        if (!canContinue) return false;
+      }
     }
 
-    while (!backendDoneRef.current && runIdRef.current === runId) {
-      if (isPausedRef.current) {
-        await sleep(120);
-        continue;
-      }
-      await sleep(120);
-    }
+    setActiveToolName(undefined);
 
     if (runIdRef.current === runId) {
       setState(prev => ({
         ...prev,
         currentStep: WorkflowStep.COMPLETED,
       }));
+      return true;
     }
+
+    return false;
   };
 
   const runSimulation = async (customPrompt?: string) => {
@@ -627,11 +747,16 @@ const App: React.FC = () => {
     setIsSimulating(true);
     setIsPaused(false);
     setActiveModelName("llama-3.3-70b");
-    backendDoneRef.current = false;
+    setShowFinalOutput(false);
+    setPathHistory(prev => [
+      {
+        prompt: activePrompt,
+        reasoning: 'Processing...\n\nRoute: Detecting...\n\nExecution sequence\nPending',
+        logId: `processing_${Date.now()}`,
+      },
+      ...prev,
+    ]);
 
-    const stepsToAnimate = buildStepPath(activePrompt);
-    void animateWorkflow(stepsToAnimate, activePrompt, runId);
-    
     // ═══ Backend API Mode (Always - System is Fully Autonomous) ═══════════════
     // The system now always uses intelligent backend routing without approval gates.
     // This ensures precision, accuracy, and intelligent task-based model selection.
@@ -674,6 +799,7 @@ const App: React.FC = () => {
       }
 
       const result = await response.json();
+      const activeMcpTool = resolveMcpToolName(result);
 
       // Parse execution log to animate through intermediate steps
       const executionLog = result.execution_log || [];
@@ -688,6 +814,9 @@ const App: React.FC = () => {
       }));
 
       // Workflow always completes (no interrupts)
+      const completedLogId = `completed_${Date.now()}`;
+      const analysisSteps = buildStepPathFromRoute(result.route);
+      const analysisText = buildPathAnalysis(result.route, result.plan_reasoning, analysisSteps);
       setState(prev => ({
         ...prev,
         finalInput: activePrompt,
@@ -696,7 +825,7 @@ const App: React.FC = () => {
           ...prev.logs,
           ...newLogs,
           {
-            id: `completed_${Date.now()}`,
+            id: completedLogId,
             type: 'SYSTEM',
             message: 'Workflow Completed',
             timestamp: new Date().toLocaleTimeString(),
@@ -705,8 +834,34 @@ const App: React.FC = () => {
         ],
       }));
 
+      setPathHistory(prev => {
+        if (prev.length === 0) {
+          return [
+            {
+              prompt: activePrompt,
+              reasoning: analysisText,
+              logId: completedLogId,
+              output: result.final_response,
+            },
+          ];
+        }
+        const updated = [...prev];
+        updated[0] = {
+          prompt: activePrompt,
+          reasoning: analysisText,
+          logId: completedLogId,
+          output: result.final_response,
+        };
+        return updated;
+      });
+
+      const expectedSteps = buildStepPathFromRoute(result.route);
+      const animationCompleted = await animateWorkflow(expectedSteps, activePrompt, runId, { delayMs: 850, logExec: false, mcpToolName: activeMcpTool });
+      if (animationCompleted && runIdRef.current === runId) {
+        setShowFinalOutput(true);
+      }
+
       setActiveModelName(result.active_model || 'Backend API');
-      backendDoneRef.current = true;
       setIsSimulating(false);
       setPrompt('');
       return;
@@ -735,6 +890,9 @@ const App: React.FC = () => {
       }));
       const mathResult = tryEvaluateMath(activePrompt);
       if (mathResult) {
+        const fallbackLogId = `fallback_math_${Date.now()}`;
+        const analysisText = buildPathAnalysis('direct', 'Local calculator used due to backend unavailability.', buildStepPathFromRoute('direct'));
+        const fallbackSteps = buildStepPathFromRoute('direct');
         setState(prev => ({
           ...prev,
           finalInput: activePrompt,
@@ -742,7 +900,7 @@ const App: React.FC = () => {
           logs: [
             ...prev.logs,
             {
-              id: `fallback_math_${Date.now()}`,
+              id: fallbackLogId,
               type: 'SYSTEM',
               message: 'Local Calculator Fallback',
               timestamp: new Date().toLocaleTimeString(),
@@ -750,8 +908,19 @@ const App: React.FC = () => {
             },
           ],
         }));
+        setPathHistory(prev => {
+          if (prev.length === 0) {
+            return [{ prompt: activePrompt, reasoning: analysisText, logId: fallbackLogId, output: mathResult }];
+          }
+          const updated = [...prev];
+          updated[0] = { prompt: activePrompt, reasoning: analysisText, logId: fallbackLogId, output: mathResult };
+          return updated;
+        });
+        const animationCompleted = await animateWorkflow(fallbackSteps, activePrompt, runId, { delayMs: 850, logExec: false, mcpToolName: 'Calculator' });
+        if (animationCompleted && runIdRef.current === runId) {
+          setShowFinalOutput(true);
+        }
         setActiveModelName('Local Calculator');
-        backendDoneRef.current = true;
         setIsSimulating(false);
         setPrompt('');
         return;
@@ -762,6 +931,9 @@ const App: React.FC = () => {
         const fallbackMessage = ragContextBlock
           ? `Backend unavailable. Retrieved context:\n\n${ragContextBlock}`
           : 'Backend unavailable. Please try again.';
+        const fallbackLogId = `fallback_${Date.now()}`;
+        const analysisText = buildPathAnalysis('rag_only', 'Local RAG pipeline executed due to backend unavailability.', buildStepPathFromRoute('rag_only'));
+        const fallbackSteps = buildStepPathFromRoute('rag_only');
 
         setState(prev => ({
           ...prev,
@@ -770,7 +942,7 @@ const App: React.FC = () => {
           logs: [
             ...prev.logs,
             {
-              id: `fallback_${Date.now()}`,
+              id: fallbackLogId,
               type: 'SYSTEM',
               message: 'Local RAG Fallback',
               timestamp: new Date().toLocaleTimeString(),
@@ -778,7 +950,22 @@ const App: React.FC = () => {
             },
           ],
         }));
+        setPathHistory(prev => {
+          if (prev.length === 0) {
+            return [{ prompt: activePrompt, reasoning: analysisText, logId: fallbackLogId, output: fallbackMessage }];
+          }
+          const updated = [...prev];
+          updated[0] = { prompt: activePrompt, reasoning: analysisText, logId: fallbackLogId, output: fallbackMessage };
+          return updated;
+        });
+        const animationCompleted = await animateWorkflow(fallbackSteps, activePrompt, runId, { delayMs: 850, logExec: false, mcpToolName: 'WebSearch' });
+        if (animationCompleted && runIdRef.current === runId) {
+          setShowFinalOutput(true);
+        }
       } catch (fallbackError) {
+        const fallbackLogId = `fallback_error_${Date.now()}`;
+        const analysisText = buildPathAnalysis('direct', 'Fallback failed; no local reasoning available.', buildStepPathFromRoute('direct'));
+        const fallbackSteps = buildStepPathFromRoute('direct');
         setState(prev => ({
           ...prev,
           finalInput: activePrompt,
@@ -786,7 +973,7 @@ const App: React.FC = () => {
           logs: [
             ...prev.logs,
             {
-              id: `fallback_error_${Date.now()}`,
+              id: fallbackLogId,
               type: 'SYSTEM',
               message: 'Local RAG Fallback Failed',
               timestamp: new Date().toLocaleTimeString(),
@@ -794,9 +981,20 @@ const App: React.FC = () => {
             },
           ],
         }));
+        setPathHistory(prev => {
+          if (prev.length === 0) {
+            return [{ prompt: activePrompt, reasoning: analysisText, logId: fallbackLogId, output: 'Backend unavailable. Please try again.' }];
+          }
+          const updated = [...prev];
+          updated[0] = { prompt: activePrompt, reasoning: analysisText, logId: fallbackLogId, output: 'Backend unavailable. Please try again.' };
+          return updated;
+        });
+        const animationCompleted = await animateWorkflow(fallbackSteps, activePrompt, runId, { delayMs: 850, logExec: false, mcpToolName: 'WebSearch' });
+        if (animationCompleted && runIdRef.current === runId) {
+          setShowFinalOutput(true);
+        }
       } finally {
         setActiveModelName('Local RAG Fallback');
-        backendDoneRef.current = true;
         setIsSimulating(false);
         setPrompt('');
       }
@@ -1453,13 +1651,14 @@ const App: React.FC = () => {
           )}
         </div>
 
-        {(state.finalInput && state.finalOutput) && (
+        {(showFinalOutput && state.finalInput && state.finalOutput) && (
           <div className="fixed top-1/2 right-10 -translate-y-1/2 w-full max-w-xl bg-[#080c14]/98 border border-emerald-500/20 backdrop-blur-3xl rounded-[2.5rem] p-8 shadow-[0_50px_100px_rgba(0,0,0,0.8)] z-[300] animate-in slide-in-from-right duration-500 max-h-[85vh] overflow-y-auto custom-scrollbar">
             <div className="flex items-center gap-4 mb-6 sticky top-0 py-2">
               <div className="w-3 h-3 rounded-full bg-emerald-500 animate-pulse shadow-[0_0_12px_rgba(16,185,129,0.5)]" />
               <span className="text-[12px] font-black uppercase tracking-[0.4em] text-emerald-400">Synthesis Complete</span>
               <button onClick={() => {
                 setState(s => ({...s, finalInput: undefined, finalOutput: undefined}));
+                setShowFinalOutput(false);
               }} className="ml-auto p-2.5 text-slate-600 hover:text-white transition-colors bg-white/5 rounded-2xl border border-white/5">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 6L6 18M6 6l12 12"/></svg>
               </button>
