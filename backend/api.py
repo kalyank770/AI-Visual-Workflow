@@ -124,22 +124,7 @@ class GraphInfoResponse(BaseModel):
     edges: list[dict]
 
 
-class ApprovalRequest(BaseModel):
-    approved: bool = Field(
-        ...,
-        description="Whether to approve (True) or reject (False) the workflow execution",
-    )
-    reason: str | None = Field(
-        None,
-        description="Optional reason for approval or rejection",
-    )
 
-
-class ApprovalResponse(BaseModel):
-    run_id: str
-    status: str  # "approved", "rejected", "resumed"
-    message: str
-    result: dict | None = None
 
 
 class DashboardLogEntry(BaseModel):
@@ -284,48 +269,7 @@ async def api_run(request: RunRequest):
     )
 
 
-@app.post("/api/approve/{run_id}", response_model=ApprovalResponse)
-async def api_approve(run_id: str, request: ApprovalRequest):
-    """
-    Approve or reject an interrupted workflow and optionally resume execution.
-    
-    If approved=True, sets human_approved flag and resumes the workflow from checkpoint.
-    If approved=False, marks the workflow as rejected without resuming.
-    """
-    try:
-        if request.approved:
-            # Approve and resume the workflow
-            result = resume_workflow(run_id, approved=True, reason=request.reason)
-            
-            if result.get("error"):
-                return ApprovalResponse(
-                    run_id=run_id,
-                    status="error",
-                    message=result["error"],
-                    result=None,
-                )
-            
-            return ApprovalResponse(
-                run_id=run_id,
-                status="resumed",
-                message="Workflow approved and resumed successfully",
-                result=result,
-            )
-        else:
-            # Reject the workflow
-            result = resume_workflow(run_id, approved=False, reason=request.reason or "Rejected by user")
-            
-            return ApprovalResponse(
-                run_id=run_id,
-                status="rejected",
-                message=f"Workflow rejected: {request.reason or 'User declined'}",
-                result=result,
-            )
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to process approval for run_id={run_id}: {str(e)}"
-        )
+
 
 
 @app.get("/api/health", response_model=HealthResponse)
@@ -412,160 +356,20 @@ async def api_dashboard_logs(request: DashboardLogBatchRequest):
         raise HTTPException(status_code=500, detail=f"Failed to persist dashboard logs: {str(e)}")
 
 
-# ─── RAG Document Management Endpoints ──────────────────────
-
-class DocumentRequest(BaseModel):
-    source: str = Field(..., description="Document source/filename")
-    content: str = Field(..., description="Document content")
 
 
-class DocumentResponse(BaseModel):
-    source: str
-    content_preview: str
 
 
-@app.get("/api/rag/documents")
-async def rag_get_documents():
-    """Get list of documents currently indexed in RAG."""
-    try:
-        if not _rag_engine:
-            raise HTTPException(status_code=503, detail="RAG engine not initialized")
-        
-        stats = _rag_engine.get_stats()
-        documents = _rag_engine.documents if hasattr(_rag_engine, 'documents') else []
-        
-        return {
-            "status": "ok",
-            "total_documents": stats.get("total_documents", 0),
-            "total_chunks": stats.get("total_chunks", 0),
-            "documents": [
-                {
-                    "source": doc.get("source") or doc.get("title", "unknown"),
-                    "content_preview": doc.get("content", "")[:200] + "..."
-                }
-                for doc in documents[:10]  # Limit to first 10
-            ]
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to retrieve documents: {str(e)}")
 
 
-@app.post("/api/rag/documents")
-async def rag_add_document(request: DocumentRequest):
-    """Add a new document to the RAG knowledge base."""
-    try:
-        from backend.rag.document_loader import add_document
-        
-        if not _rag_engine:
-            raise HTTPException(status_code=503, detail="RAG engine not initialized")
-        
-        # Save document to disk
-        document = {
-            "source": request.source,
-            "content": request.content
-        }
-        success = add_document(document)
-        
-        if not success:
-            raise HTTPException(status_code=500, detail="Failed to save document to disk")
-        
-        # Add to RAG engine if it supports it
-        if hasattr(_rag_engine, 'add_documents'):
-            _rag_engine.add_documents([document])
-        
-        return {
-            "status": "ok",
-            "message": f"Document '{request.source}' added successfully",
-            "document": {
-                "source": request.source,
-                "content_preview": request.content[:200] + "..."
-            }
-        }
-    except ImportError:
-        raise HTTPException(status_code=500, detail="Document loader not available")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to add document: {str(e)}")
 
 
-@app.post("/api/rag/reload")
-async def rag_reload_documents():
-    """Reload documents from /data directory and re-index."""
-    try:
-        from backend.rag.document_loader import load_all_documents
-        from backend.rag.vector_engine import create_rag_engine
-        
-        if not _rag_engine:
-            raise HTTPException(status_code=503, detail="RAG engine not initialized")
-        
-        # Load fresh documents (data_dir is in backend/data/)
-        data_dir = os.path.join(os.path.dirname(__file__), "data")
-        new_documents = load_all_documents(data_dir)
-        
-        if not new_documents:
-            raise HTTPException(status_code=400, detail="No documents found in /data directory")
-        
-        # Re-create engine with new documents
-        new_engine = create_rag_engine(new_documents)
-        
-        # Replace global engine reference
-        import backend.core.orchestrator as orchestrator
-        orchestrator._rag_engine = new_engine
-        
-        return {
-            "status": "ok",
-            "message": f"Reloaded {len(new_documents)} documents",
-            "stats": new_engine.get_stats()
-        }
-    except ImportError as e:
-        raise HTTPException(status_code=500, detail=f"Import error: {str(e)}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to reload documents: {str(e)}")
 
 
-@app.post("/api/rag/save-index")
-async def rag_save_index():
-    """Save the current RAG index to disk for persistence."""
-    try:
-        if not _rag_engine:
-            raise HTTPException(status_code=503, detail="RAG engine not initialized")
-        
-        if not hasattr(_rag_engine, 'save_index'):
-            raise HTTPException(status_code=400, detail="RAG engine does not support index persistence")
-        
-        # Save to default path
-        index_path = os.path.join(os.path.dirname(__file__), "models", "rag_index")
-        os.makedirs(os.path.dirname(index_path), exist_ok=True)
-        
-        success = _rag_engine.save_index(index_path)
-        
-        if not success:
-            raise HTTPException(status_code=500, detail="Failed to save index")
-        
-        return {
-            "status": "ok",
-            "message": "RAG index saved successfully",
-            "path": index_path
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to save index: {str(e)}")
 
 
-@app.get("/api/rag/stats")
-async def rag_get_stats():
-    """Get detailed statistics about the RAG engine."""
-    try:
-        if not _rag_engine:
-            raise HTTPException(status_code=503, detail="RAG engine not initialized")
-        
-        stats = _rag_engine.get_stats()
-        
-        return {
-            "status": "ok",
-            "stats": stats,
-            "timestamp": datetime.now().isoformat()
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get stats: {str(e)}")
+
+
 
 
 @app.exception_handler(Exception)

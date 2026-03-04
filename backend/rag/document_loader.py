@@ -1,12 +1,24 @@
 """
 Document Loader for RAG System
-Loads documents from files, handles multiple formats, manages persistence
+Loads documents from files, handles multiple formats (txt, md, json, pdf), manages persistence
 """
 import os
 import json
 import glob
 from pathlib import Path
 from typing import List, Dict, Any
+
+# PDF support (optional)
+try:
+    from pypdf import PdfReader
+    PDF_AVAILABLE = True
+except ImportError:
+    try:
+        from PyPDF2 import PdfReader
+        PDF_AVAILABLE = True
+    except ImportError:
+        PDF_AVAILABLE = False
+        PdfReader = None
 
 def load_documents_from_directory(data_dir: str) -> List[Dict[str, str]]:
     """
@@ -73,6 +85,34 @@ def load_documents_from_directory(data_dir: str) -> List[Dict[str, str]]:
                     })
         except Exception as e:
             print(f"Error loading {json_file}: {e}")
+    
+    # Load PDF files
+    if PDF_AVAILABLE:
+        for pdf_file in data_path.glob("**/*.pdf"):
+            try:
+                reader = PdfReader(str(pdf_file))
+                content_parts = []
+                
+                for page_num, page in enumerate(reader.pages, 1):
+                    text = page.extract_text()
+                    if text and text.strip():
+                        content_parts.append(text.strip())
+                
+                if content_parts:
+                    full_content = "\n\n".join(content_parts)
+                    documents.append({
+                        "source": str(pdf_file.relative_to(data_path)),
+                        "content": full_content,
+                        "page_count": len(reader.pages)
+                    })
+                    print(f"Loaded PDF: {pdf_file.name} ({len(reader.pages)} pages, {len(full_content)} chars)")
+            except Exception as e:
+                print(f"Error loading PDF {pdf_file}: {e}")
+    else:
+        # Check if there are PDFs that can't be loaded
+        pdf_files = list(data_path.glob("**/*.pdf"))
+        if pdf_files:
+            print(f"Warning: Found {len(pdf_files)} PDF files but pypdf is not installed. Run: pip install pypdf")
     
     return documents
 

@@ -6,7 +6,7 @@ Successfully upgraded the AI Visual Workflow project from a simple TF-IDF keywor
 
 ## Key Changes
 
-### 1. New Vector RAG Engine (`mcp-server/vector_rag_engine.py`)
+### 1. New Vector RAG Engine (`backend/rag/vector_engine.py`)
 
 Created a comprehensive RAG implementation with:
 
@@ -27,7 +27,7 @@ Created a comprehensive RAG implementation with:
   - ✅ Sentence-aware chunking (preserves context)
   - ✅ Automatic fallback to TF-IDF if dependencies unavailable
 
-### 2. Updated Dependencies (`mcp-server/requirements.txt`)
+### 2. Updated Dependencies (`backend/requirements.txt`)
 
 Added:
 ```
@@ -36,13 +36,13 @@ faiss-cpu>=1.7.0             # Vector similarity search
 numpy>=1.24.0                # Numerical operations
 ```
 
-### 3. Workflow Integration (`mcp-server/langgraph_workflow.py`)
+### 3. Workflow Integration (`backend/core/orchestrator.py`)
 
 - Automatically detects and uses VectorRAGEngine if available
 - Graceful fallback to TF-IDF if dependencies missing
 - Zero code changes needed in the rest of the workflow
 
-### 4. API Updates (`mcp-server/langgraph_api.py`)
+### 4. API Updates (`backend/api.py`)
 
 Enhanced `/api/health` endpoint to report:
 - RAG engine type (`VectorRAGEngine` vs `TFIDFRAGEngine`)
@@ -95,13 +95,17 @@ All tests passed successfully:
 
 ```
 AI-Visual-Workflow/
-├── mcp-server/
-│   ├── vector_rag_engine.py     ← NEW: Real RAG implementation
-│   ├── test_rag.py               ← NEW: Test suite
-│   ├── RAG_README.md             ← NEW: Documentation
-│   ├── langgraph_workflow.py     ← MODIFIED: Uses new engine
-│   ├── langgraph_api.py          ← MODIFIED: Enhanced health endpoint
-│   └── requirements.txt          ← MODIFIED: Added vector libs
+├── backend/
+│   ├── rag/
+│   │   ├── vector_engine.py       ← Real RAG implementation
+│   │   └── document_loader.py     ← Document ingestion
+│   ├── core/
+│   │   └── orchestrator.py        ← LangGraph orchestration (uses RAG engine)
+│   ├── api.py                     ← FastAPI REST API (enhanced health endpoint)
+│   ├── main.py                    ← Entry point
+│   ├── tools/                     ← Tool integrations
+│   ├── data/                      ← Knowledge base
+│   └── requirements.txt           ← Dependencies (includes vector libs)
 ```
 
 ## How to Use
@@ -109,7 +113,7 @@ AI-Visual-Workflow/
 ### 1. Install Dependencies
 
 ```bash
-cd mcp-server
+cd backend
 pip install -r requirements.txt
 ```
 
@@ -117,16 +121,10 @@ On first run, downloads the embedding model (~90MB):
 - Model: `sentence-transformers/all-MiniLM-L6-v2`
 - Cache location: `~/.cache/huggingface/`
 
-### 2. Run Tests
+### 2. Start the Server
 
 ```bash
-python test_rag.py
-```
-
-### 3. Start the Server
-
-```bash
-python langgraph_api.py
+python main.py
 ```
 
 The workflow automatically:

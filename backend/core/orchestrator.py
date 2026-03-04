@@ -1852,19 +1852,41 @@ You are an intent classifier for an AI assistant. Given the user's query, classi
 If the query contains time-sensitive keywords (current, latest, recent, new, live, today, now, this week, this month, 2024, 2025, 2026),
 ALWAYS prefer "mcp_only" for real-world entities OR "hybrid" for OpenText queries. Do NOT use "rag_only" for time-sensitive requests.
 
-Routes:
-- "rag_only": Query about internal knowledge topics ONLY (and NOT time-sensitive) — these live in our document store:
-  OpenText products (OTCS, Content Server, Documentum, xECM, Exstream, TeamSite, AppWorks, Fortify, ArcSight, NetIQ, Voltage, EnCase, LoadRunner, SMAX, Magellan, Aviator, Trading Grid),
-  RAG / retrieval-augmented generation, LangGraph, LangChain, MCP protocol, agentic AI architecture, embeddings, vector databases, AI pipelines and orchestration.
+*** CRITICAL: Compound/Multi-Intent Queries ***
+If the query contains MULTIPLE distinct intents (e.g., internal knowledge + calculation, or internal docs + weather),
+ALWAYS use "hybrid" to handle both intent types. Examples:
+- "OpenText Content Server features, 15*20" → hybrid (RAG + calculator)
+- "What is RAG, weather in London" → hybrid (RAG + weather tool)
+- "LangGraph documentation, define serendipity" → hybrid (RAG + dictionary)
+Look for patterns: commas, "and", "also", math expressions (*, +, -, /), or mixed topics.
 
-- "mcp_only": Query that needs external tools or real-time data — weather, stock prices,
+Routes:
+- "rag_only": Query about internal knowledge topics ONLY (and NOT time-sensitive, and NO other intent) — ONLY use if query is EXPLICITLY about ONE of these specific topics in our document store:
+  • OpenText products (OTCS, Content Server, Documentum, xECM, Exstream, TeamSite, AppWorks, Fortify, ArcSight, NetIQ, Voltage, EnCase, LoadRunner, SMAX, Magellan, Aviator, Trading Grid)
+  • RAG / retrieval-augmented generation concepts
+  • LangGraph, LangChain frameworks
+  • MCP protocol
+  • Agentic AI architecture, embeddings, vector databases, AI pipelines and orchestration
+  
+  *** DO NOT use rag_only for: ***
+  - General programming questions (Python, Java, C, JavaScript, etc.)
+  - General knowledge questions (history, science, math, literature, etc.)
+  - How-to tutorials or code examples not related to the topics above
+  - Any query that is NOT explicitly about the internal topics listed above
+  - Compound queries with multiple intents (use hybrid instead)
+
+- "mcp_only": Query that needs external tools, real-time data, or general knowledge (and NO internal knowledge needed) — weather, stock prices,
   stock predictions/forecasts, time/timezone, math calculations, word definitions,
   Wikipedia lookups, general knowledge questions, current events, people's recent activities,
-  company leadership (CEO, CFO, executives), earnings, latest news, any time-sensitive factual question.
+  company leadership (CEO, CFO, executives), earnings, latest news, any time-sensitive factual question,
+  general programming questions, coding tutorials, technical how-tos.
 
-- "hybrid": Query that is about OpenText (the company/corporation/leadership) AND needs
-  real-time or current information (e.g., "OpenText stock price", "OpenText CEO", "OpenText latest news", "OpenText revenue 2025").
-  Note: Use hybrid ONLY if explicitly about the OpenText company. If asking about OpenText products/features, use rag_only.
+- "hybrid": Query that combines internal knowledge with external tools OR has multiple intents:
+  • OpenText (the company/corporation/leadership) + real-time info (stock price, CEO, latest news, revenue 2025)
+  • Internal knowledge query + calculation/tool (e.g., "RAG pipeline, 18*896")
+  • Internal docs + external lookup (e.g., "Content Server upgrade, weather in NYC")
+  • Any query with commas or multiple distinct questions
+  Note: Use hybrid for ALL compound queries. If asking ONLY about OpenText products/features with no other intent, use rag_only.
 
 - "direct": Simple greetings (hi, hello, hey, thanks, bye), chitchat, or trivial
   conversation that needs no data lookup at all.
@@ -2366,18 +2388,35 @@ def _regex_classify_route(prompt: str) -> tuple[str, str]:
         )
     )
 
+    # ─── Detect general programming/coding questions (should NOT go to RAG) ───
+    is_programming_query = bool(
+        re.search(
+            r"\b(program(?:ming)?|code|coding|sample\s+(?:code|program)|"
+            r"python|java|javascript|c\+\+|c(?:\s+program)|js|typescript|ruby|php|swift|kotlin|"
+            r"function|class|method|algorithm|syntax|script|snippet|example\s+code|"
+            r"hello\s+world|fizzbuzz|loop|array|variable|string|integer)\b",
+            lower,
+        )
+    ) and not bool(
+        re.search(
+            r"\b(?:opentext|otcs|content\s+server|documentum|langgraph|langchain|"
+            r"rag|retrieval|vector|embedding|mcp\s+protocol|agentic)\b",
+            lower,
+        )
+    )
+
     is_opentext_product = bool(
         re.search(
-            r"\b(otcs|content\s*server|documentum|extended\s*ecm|xecm|exstream|"
+            r"\b(?:otcs|content\s+server|content\s+management|documentum|extended\s+ecm|xecm|exstream|"
             r"teamsite|appworks|fortify|arcsight|netiq|voltage|encase|loadrunner|"
-            r"smax|magellan|aviator|trading\s*grid)\b",
+            r"smax|magellan|aviator|trading\s+grid)\b",
             lower,
         )
     )
     is_opentext_general = not is_opentext_product and bool(
         re.search(r"\b(opentext|open\s*text|otex)\b", lower)
     )
-    is_rag_preferred = is_opentext_product or bool(
+    is_rag_preferred = is_opentext_product or is_opentext_general or bool(
         re.search(
             r"\b(polic(?:y|ies)|guide|doc(?:s|ument(?:ation)?)?|internal|knowledge|support|"
             r"rag|retrieval|vector|embedding|langgraph|langchain|orchestrat|agentic|mcp|"
@@ -2420,14 +2459,31 @@ def _regex_classify_route(prompt: str) -> tuple[str, str]:
     is_dictionary = bool(re.search(r"\b(define|meaning\s+of|definition)\b", lower))
     is_tell_about = bool(re.search(r"\b(tell\s+(?:me\s+)?about|who\s+is|who\s+was)\b", lower))
 
+    # ─── Detect compound/multi-intent queries ───
+    # Check if query has math expression embedded (not pure math)
+    has_math_expression = bool(re.search(r"\d+\s*[*/+\-]\s*\d+", prompt)) and not bool(re.match(r"^[\d\s+\-*/().^]+$", prompt))
+    
+    # Check if query has multiple topics (commas, "and", "also")
+    has_multiple_topics = bool(re.search(r",\s*\w+|(?:\s+and\s+|\s+also\s+)(?!the\b)", lower))
+    
+    # Compound query detection: RAG topic + tool intent
+    is_compound_rag_tool = (
+        (is_opentext_product or is_rag_preferred) and 
+        (has_math_expression or needs_realtime or is_time_query or is_dictionary or has_multiple_topics)
+    )
+
     if is_greeting:
         return "direct", "[regex] Simple greeting → direct LLM response."
+    if is_compound_rag_tool:
+        return "hybrid", "[regex] Compound query detected → RAG + MCP tools."
     if is_math:
         return "mcp_only", "[regex] Math/computation detected → calculator tool."
     if is_time_query:
         return "mcp_only", "[regex] Time/timezone query → world clock tool."
     if is_dictionary:
         return "mcp_only", "[regex] Dictionary/definition query → dictionary tool."
+    if is_programming_query:
+        return "mcp_only", "[regex] General programming question → web search/external knowledge."
     
     # ═══ TIME-SENSITIVE QUERIES (Priority Override) ═══
     # If query has time-sensitive keywords, prioritize real-time data sources
@@ -2452,6 +2508,7 @@ def _regex_classify_route(prompt: str) -> tuple[str, str]:
     if is_tell_about:
         return "mcp_only", "[regex] Informational query → external knowledge."
     return "direct", "[regex] General question → direct LLM response."
+
 
 
 def planner_node(state: AgentState) -> dict:

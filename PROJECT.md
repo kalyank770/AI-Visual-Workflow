@@ -5,22 +5,20 @@ A production-ready visualizer and backend for an agentic workflow. The UI shows 
 ## What This Project Does
 - Visualizes an agentic workflow in a live, animated UI.
 - Runs a real LangGraph workflow with routing: RAG-only, MCP-only, Hybrid, or Direct.
-- **NEW: Real RAG with vector embeddings** using Sentence Transformers + FAISS
+- **Real RAG with vector embeddings** using Sentence Transformers + FAISS for semantic search
 - Executes real tools for stocks, weather, currency, time, dictionary, web search, and more.
 - Uses intelligent LLM routing to choose the best model by task type, budget, and latency.
 - Supports optional Redis persistence for workflow checkpoints.
-- Provides an MCP server for external assistants to query architecture metadata.
 
 ## Architecture Overview
 Frontend (React + Vite):
 - App.tsx renders the workflow diagram and telemetry logs.
 - User input is sent to the backend API.
-- If the backend fails, a minimal local RAG fallback returns retrieved context.
 
 Backend (Python + FastAPI + LangGraph):
 - Intake -> Planner -> (RAG and/or Tools) -> Synthesizer -> Output
 - Planner selects route: rag_only, mcp_only, hybrid, direct
-- **RAG: Vector embeddings with FAISS for semantic search** (NEW!)
+- **RAG: Vector embeddings with FAISS for semantic search**
   - Sentence Transformers (all-MiniLM-L6-v2) for embeddings
   - FAISS for fast similarity search (~15ms)
   - Hybrid search: 70% vector + 30% keyword matching
@@ -28,9 +26,6 @@ Backend (Python + FastAPI + LangGraph):
   - Falls back to TF-IDF if dependencies unavailable
 - Tools: real API calls (Yahoo Finance, Open-Meteo, Wikipedia, etc.)
 - LLM: internal Llama 3.3 70B primary, Gemini fallback
-
-MCP Server (Node.js):
-- Exposes architecture metadata tools to external assistants.
 
 ## Run Locally
 
@@ -42,9 +37,9 @@ npm run dev
 
 ### 2) Backend API
 ```bash
-cd mcp-server
+cd backend
 pip install -r requirements.txt
-python langgraph_api.py
+python main.py
 ```
 
 **First run**: Downloads the embedding model (~90MB) and indexes documents (~4s)  
@@ -52,11 +47,9 @@ python langgraph_api.py
 
 Default API URL: http://localhost:5001
 
-For more details on the RAG implementation, see [mcp-server/RAG_README.md](mcp-server/RAG_README.md)
-
-### 3) MCP Server (optional)
+### Combined (Frontend + Backend)
 ```bash
-npm run mcp
+npm run start
 ```
 
 ## API Endpoints
@@ -100,30 +93,31 @@ AI-Visual-Workflow/
 ├── components/
 │   ├── AnimatedFlow.tsx
 │   └── Diagram.tsx
-├── services/
-│   └── ragService.ts          # Browser-based RAG fallback
-├── mcp-server/
-│   ├── langgraph_workflow.py  # Core workflow
-│   ├── langgraph_api.py       # REST API
-│   ├── vector_rag_engine.py   # Real RAG with embeddings (NEW!)
-│   ├── test_rag.py            # RAG test suite (NEW!)
-│   ├── RAG_README.md          # RAG documentation (NEW!)
-│   ├── index.js               # MCP server
+├── backend/
+│   ├── main.py                # Entry point
+│   ├── api.py                 # FastAPI REST API
+│   ├── core/
+│   │   └── orchestrator.py    # LangGraph orchestration
+│   ├── rag/
+│   │   ├── document_loader.py # Document ingestion
+│   │   └── vector_engine.py   # Vector search & embeddings
+│   ├── tools/                 # Tool integrations
+│   ├── data/                  # Knowledge base
 │   └── requirements.txt
 ├── images/
 │   └── architecture-diagram.png
-├── IMPLEMENTATION_SUMMARY.md   # RAG implementation details (NEW!)
 ├── index.html
 ├── index.tsx
 ├── constants.tsx
 ├── types.ts
-└── package.json
+├── package.json
+├── vite.config.ts
+└── tsconfig.json
 ```
 
 ## Notes
 - The system is fully autonomous. No human approval gates are used.
-- Frontend tool execution and frontend Gemini service have been removed for production cleanup.
-- Local RAG fallback is kept for backend outage scenarios.
+- Frontend communicates with the backend API for all workflow execution.
 
 ## Build
 ```bash
@@ -131,6 +125,6 @@ npm run build
 ```
 
 ## Troubleshooting
-- If backend is down: UI returns local RAG context only.
+- If backend is down: UI will show an error. Ensure backend is running at http://localhost:5001
 - If Redis is not available: workflow falls back to in-memory persistence.
 - If LLM keys are missing: tools and RAG still run; LLM response uses template fallback.

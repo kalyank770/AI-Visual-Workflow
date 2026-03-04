@@ -3,7 +3,6 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { WorkflowStep, SimulationState, LogEntry } from './types';
 import { ARCHITECTURE_COMPONENTS, STEP_METADATA } from './constants';
 import AnimatedFlow from './components/AnimatedFlow';
-import { runRAGPipeline, RAGPipelineResult } from './services/ragService';
 
 const InternalComponentDetail = ({ detail, isDarkMode }: { detail: any, isDarkMode: boolean }) => {
   const [isExpanded, setIsExpanded] = useState(false);
@@ -71,11 +70,6 @@ const App: React.FC = () => {
   const [isDarkMode, setIsDarkMode] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [enableInterrupts, setEnableInterrupts] = useState(false);
-  const [pendingWorkflow, setPendingWorkflow] = useState<{
-    run_id: string;
-    prompt: string;
-    execution_log: any[];
-  } | null>(null);
   const RAG_TERMS = [
     "rag",
     "internal",
@@ -170,7 +164,7 @@ const App: React.FC = () => {
   const isPausedRef = useRef(isPaused);
   const runIdRef = useRef(0);
   const toolDataRef = useRef<string[]>([]);
-  const ragDataRef = useRef<RAGPipelineResult | null>(null);
+  const ragDataRef = useRef<any>(null);
   const persistedLogCountRef = useRef(0);
   const [activeToolName, setActiveToolName] = useState<string | undefined>(undefined);
   const [activeToolNames, setActiveToolNames] = useState<string[]>([]);
@@ -1028,80 +1022,6 @@ const App: React.FC = () => {
         setPrompt('');
         return;
       }
-      try {
-        const ragResult = await runRAGPipeline(activePrompt);
-        const ragContextBlock = ragResult?.contextBlock;
-        const fallbackMessage = ragContextBlock
-          ? `Backend unavailable. Retrieved context:\n\n${ragContextBlock}`
-          : 'Backend unavailable. Please try again.';
-        const fallbackLogId = `fallback_${Date.now()}`;
-        const analysisText = buildPathAnalysis('rag_only', `Local RAG pipeline executed due to backend unavailability. ${fallbackReason}`, buildStepPathFromRoute('rag_only'));
-        const fallbackSteps = buildStepPathFromRoute('rag_only');
-
-        setState(prev => ({
-          ...prev,
-          finalInput: activePrompt,
-          finalOutput: fallbackMessage,
-          logs: [
-            ...prev.logs,
-            {
-              id: fallbackLogId,
-              type: 'SYSTEM',
-              message: 'Local RAG Fallback',
-              timestamp: new Date().toLocaleTimeString(),
-              details: `Backend unavailable. Returned local RAG context only. ${fallbackReason}`,
-            },
-          ],
-        }));
-        setPathHistory(prev => {
-          if (prev.length === 0) {
-            return [{ prompt: activePrompt, reasoning: analysisText, logId: fallbackLogId, output: fallbackMessage }];
-          }
-          const updated = [...prev];
-          updated[0] = { prompt: activePrompt, reasoning: analysisText, logId: fallbackLogId, output: fallbackMessage };
-          return updated;
-        });
-        const animationCompleted = await animateWorkflow(fallbackSteps, activePrompt, runId, { delayMs: 850, logExec: false, mcpToolNames: ['WebSearch'] });
-        if (animationCompleted && runIdRef.current === runId) {
-          setShowFinalOutput(true);
-        }
-      } catch (fallbackError) {
-        const fallbackLogId = `fallback_error_${Date.now()}`;
-        const analysisText = buildPathAnalysis('direct', `Fallback failed; no local reasoning available. ${fallbackReason}`, buildStepPathFromRoute('direct'));
-        const fallbackSteps = buildStepPathFromRoute('direct');
-        setState(prev => ({
-          ...prev,
-          finalInput: activePrompt,
-          finalOutput: 'Backend unavailable. Please try again.',
-          logs: [
-            ...prev.logs,
-            {
-              id: fallbackLogId,
-              type: 'SYSTEM',
-              message: 'Local RAG Fallback Failed',
-              timestamp: new Date().toLocaleTimeString(),
-              details: `Fallback error: ${fallbackError}`,
-            },
-          ],
-        }));
-        setPathHistory(prev => {
-          if (prev.length === 0) {
-            return [{ prompt: activePrompt, reasoning: analysisText, logId: fallbackLogId, output: 'Backend unavailable. Please try again.' }];
-          }
-          const updated = [...prev];
-          updated[0] = { prompt: activePrompt, reasoning: analysisText, logId: fallbackLogId, output: 'Backend unavailable. Please try again.' };
-          return updated;
-        });
-        const animationCompleted = await animateWorkflow(fallbackSteps, activePrompt, runId, { delayMs: 850, logExec: false, mcpToolNames: ['WebSearch'] });
-        if (animationCompleted && runIdRef.current === runId) {
-          setShowFinalOutput(true);
-        }
-      } finally {
-        setActiveModelName('Local RAG Fallback');
-        setIsSimulating(false);
-        setPrompt('');
-      }
-      return;
     }
   };
 
@@ -1116,79 +1036,6 @@ const App: React.FC = () => {
       setActiveModelName('Backend (Static)');
     }
     setLoadingInsight(false);
-  };
-
-  const handleApproveWorkflow = async (approved: boolean, reason?: string) => {
-    if (!pendingWorkflow) return;
-
-    try {
-      const response = await fetch(`/api/approve/${pendingWorkflow.run_id}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ approved, reason: reason || (approved ? 'User approved' : 'User declined') }),
-      });
-
-      const result = await response.json();
-
-      if (result.status === 'resumed' && result.result) {
-        // Workflow completed successfully
-        setState(prev => ({
-          ...prev,
-          finalOutput: result.result.final_response,
-          logs: [
-            ...prev.logs,
-            {
-              id: `approval_${Date.now()}`,
-              type: 'SYSTEM',
-              message: approved ? 'Workflow Approved & Resumed' : 'Workflow Rejected',
-              timestamp: new Date().toLocaleTimeString(),
-              details: result.message,
-            },
-          ],
-        }));
-
-        if (result.result.final_response) {
-          setPathHistory(prev => {
-            if (prev.length === 0) return prev;
-            const updated = [...prev];
-            updated[0] = { ...updated[0], output: result.result.final_response };
-            return updated;
-          });
-        }
-      } else if (result.status === 'rejected') {
-        setState(prev => ({
-          ...prev,
-          finalOutput: result.result?.final_response || '[REJECTED] User declined workflow execution',
-          logs: [
-            ...prev.logs,
-            {
-              id: `rejection_${Date.now()}`,
-              type: 'SYSTEM',
-              message: 'Workflow Rejected',
-              timestamp: new Date().toLocaleTimeString(),
-              details: result.message,
-            },
-          ],
-        }));
-      }
-    } catch (error) {
-      setState(prev => ({
-        ...prev,
-        logs: [
-          ...prev.logs,
-          {
-            id: `approval_error_${Date.now()}`,
-            type: 'SYSTEM',
-            message: 'Approval Failed',
-            timestamp: new Date().toLocaleTimeString(),
-            details: `Error: ${error}`,
-          },
-        ],
-      }));
-    } finally {
-      setPendingWorkflow(null);
-      setIsSimulating(false);
-    }
   };
 
   return (
@@ -1375,94 +1222,6 @@ const App: React.FC = () => {
                     <p className="text-xs text-slate-700 font-mono font-bold uppercase">{activePayloadDetail.timestamp}</p>
                   </div>
                </div>
-            </div>
-          )}
-
-          {/* Approval Modal Hidden - System is fully autonomous (no human interactions) */}
-          {false && pendingWorkflow && (
-            <div className={`fixed inset-0 ${isDarkMode ? 'bg-[#020617]/80' : 'bg-slate-200/60'} backdrop-blur-2xl z-[400] flex items-center justify-center p-6 md:p-12 animate-in fade-in duration-300`}>
-              <div className={`w-full max-w-3xl ${isDarkMode ? 'bg-[#0b1120]' : 'bg-white'} border border-amber-500/40 rounded-[2.5rem] shadow-[0_0_120px_rgba(245,158,11,0.3)] p-8 md:p-12 relative overflow-hidden`}>
-                <div className="absolute top-0 left-0 w-full h-1.5 bg-gradient-to-r from-amber-600 via-orange-500 to-red-500" />
-                
-                <div className="flex items-start gap-4 mb-8">
-                  <div className="p-4 bg-amber-500/10 border border-amber-500/30 rounded-2xl">
-                    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-amber-400">
-                      <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
-                      <line x1="12" y1="9" x2="12" y2="13"/>
-                      <line x1="12" y1="17" x2="12.01" y2="17"/>
-                    </svg>
-                  </div>
-                  <div className="flex-1">
-                    <h3 className="text-2xl font-black uppercase tracking-wide text-amber-400 mb-2">Human Approval Required</h3>
-                    <p className={`text-sm ${isDarkMode ? 'text-slate-300' : 'text-slate-700'} leading-relaxed`}>
-                      The workflow is requesting permission to execute external tools. Review the pending operations below and approve or reject.
-                    </p>
-                  </div>
-                </div>
-
-                <div className={`${isDarkMode ? 'bg-slate-900/50 border-slate-800' : 'bg-slate-50 border-slate-200'} border rounded-2xl p-6 mb-6`}>
-                  <div className="flex items-center gap-3 mb-4">
-                    <div className="px-3 py-1.5 bg-blue-500/10 border border-blue-500/30 rounded-lg">
-                      <span className="text-xs font-bold text-blue-400 uppercase tracking-wider">Query</span>
-                    </div>
-                    <span className={`text-sm font-medium ${isDarkMode ? 'text-slate-300' : 'text-slate-700'}`}>{pendingWorkflow.prompt}</span>
-                  </div>
-                  
-                  <div className="space-y-3">
-                    <h4 className={`text-xs font-black uppercase tracking-widest ${isDarkMode ? 'text-slate-500' : 'text-slate-600'} mb-3`}>Pending Tool Execution</h4>
-                    {pendingWorkflow.execution_log
-                      .filter(log => log.node === 'tools' || log.node === 'planner')
-                      .map((log, idx) => (
-                        <div key={idx} className={`${isDarkMode ? 'bg-slate-800/50 border-slate-700' : 'bg-white border-slate-200'} border rounded-xl p-4`}>
-                          <div className="flex items-start justify-between">
-                            <div>
-                              <div className="flex items-center gap-2 mb-2">
-                                <span className="px-2 py-0.5 bg-emerald-500/10 border border-emerald-500/30 rounded text-[10px] font-bold text-emerald-400 uppercase">
-                                  {log.node}
-                                </span>
-                                {log.route && (
-                                  <span className={`text-xs font-medium ${isDarkMode ? 'text-slate-400' : 'text-slate-600'}`}>
-                                    Route: {log.route}
-                                  </span>
-                                )}
-                              </div>
-                              {log.reasoning && (
-                                <p className={`text-xs ${isDarkMode ? 'text-slate-400' : 'text-slate-600'} leading-relaxed`}>
-                                  {log.reasoning}
-                                </p>
-                              )}
-                              {log.status === 'awaiting_approval' && (
-                                <p className={`text-xs ${isDarkMode ? 'text-amber-400' : 'text-amber-600'} mt-2 font-medium`}>
-                                  ⏸ {log.reason || 'Paused for approval'}
-                                </p>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                  </div>
-                </div>
-
-                <div className="flex items-center justify-between gap-4">
-                  <div className={`flex-1 ${isDarkMode ? 'text-slate-500' : 'text-slate-600'} text-xs`}>
-                    <span className="font-mono">Run ID: {pendingWorkflow.run_id.slice(0, 16)}...</span>
-                  </div>
-                  <div className="flex gap-3">
-                    <button
-                      onClick={() => handleApproveWorkflow(false, 'User declined tool execution')}
-                      className={`px-6 py-3 rounded-xl text-sm font-bold uppercase tracking-wider ${isDarkMode ? 'bg-red-500/10 hover:bg-red-500/20 text-red-400 border-red-500/30' : 'bg-red-50 hover:bg-red-100 text-red-600 border-red-200'} border transition-all`}
-                    >
-                      Reject
-                    </button>
-                    <button
-                      onClick={() => handleApproveWorkflow(true, 'User approved tool execution')}
-                      className="px-8 py-3 rounded-xl text-sm font-bold uppercase tracking-wider bg-emerald-600 hover:bg-emerald-500 text-white transition-all shadow-lg shadow-emerald-500/20"
-                    >
-                      Approve & Resume
-                    </button>
-                  </div>
-                </div>
-              </div>
             </div>
           )}
 

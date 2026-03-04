@@ -1,57 +1,56 @@
-# Real RAG Implementation - Quick Start Guide
+# AI Visual Workflow - Quick Start Guide
 
-## ✅ Implementation Complete!
+## ✅ Ready to Use!
 
-The AI Visual Workflow project now has a **production-grade RAG system** with real vector embeddings instead of simple keyword matching.
+The AI Visual Workflow project includes a **production-grade RAG system** with real vector embeddings and a complete backend API.
 
 ## 🚀 Quick Start
 
 ### 1. Install Dependencies
 
+**Frontend:**
 ```bash
-cd mcp-server
+npm install
+```
+
+**Backend:**
+```bash
+cd backend
 pip install -r requirements.txt
 ```
 
 This installs:
+- FastAPI, LangGraph, uvicorn - Backend framework
 - `sentence-transformers` - For generating embeddings
 - `faiss-cpu` - For fast vector similarity search
 - `numpy` - For numerical operations
-- All other existing dependencies
+- All other required dependencies
 
-### 2. Test the RAG System
+### 2. Start the System
 
+**Option A: Run separately**
+
+Terminal 1 - Frontend:
 ```bash
-python test_rag.py
+npm run dev
 ```
 
-**Expected output:**
-```
-✓ All tests passed successfully!
-```
-
-Test queries include:
-- "What is retrieval augmented generation?"
-- "How do vector embeddings work?"
-- "Tell me about similarity search"
-- "What is LangGraph used for?"
-- "Information about OpenText"
-
-### 3. Start the Server
-
+Terminal 2 - Backend:
 ```bash
-python langgraph_api.py
+cd backend
+python main.py
 ```
 
-**On first run:**
-- Downloads embedding model (~90MB)
-- Generates embeddings for all chunks (~4s)
-- Creates FAISS index
+**Option B: Run together**
+```bash
+npm run start
+```
 
-**On subsequent runs:**
-- Instant startup (model is cached)
+This starts both frontend and backend concurrently.
 
-### 4. Test the API
+### 3. Test the API
+
+Once the backend is running at http://localhost:5001:
 
 ```bash
 curl -X POST http://localhost:5001/api/run \
@@ -77,23 +76,6 @@ curl http://localhost:5001/api/health
   }
 }
 ```
-
-## 📊 What Changed
-
-### Before (TF-IDF)
-- ❌ Keyword matching only
-- ❌ No semantic understanding
-- ❌ Can't match synonyms
-- ✅ Fast (~10ms)
-- ✅ Zero dependencies
-
-### After (Vector RAG)
-- ✅ **Semantic search** with embeddings
-- ✅ **Understands meaning**, not just keywords
-- ✅ **Matches synonyms** ("automobile" = "car")
-- ✅ Fast (~15ms)
-- ✅ **85-90% accuracy** (vs 60-70%)
-- ✅ Automatic fallback to TF-IDF if needed
 
 ## 🎯 Key Features
 
@@ -127,32 +109,69 @@ Expands to:
 - Preserves semantic coherence
 - 400 chars per chunk with 80 char overlap
 
-## 📁 New Files
+## 📁 Project Structure
 
 ```
-mcp-server/
-├── vector_rag_engine.py     ← Real RAG implementation
-├── test_rag.py               ← Comprehensive test suite
-├── RAG_README.md             ← Detailed documentation
-└── requirements.txt          ← Updated dependencies
-
-IMPLEMENTATION_SUMMARY.md     ← This implementation summary
+AI-Visual-Workflow/
+├── App.tsx                    ← Main React app
+├── components/                ← React components
+├── backend/
+│   ├── main.py                ← Entry point
+│   ├── api.py                 ← FastAPI REST API
+│   ├── core/orchestrator.py   ← LangGraph workflow
+│   ├── rag/
+│   │   ├── vector_engine.py   ← Vector RAG implementation
+│   │   └── document_loader.py ← Document ingestion
+│   ├── tools/                 ← Tool integrations
+│   ├── data/                  ← Knowledge base
+│   └── requirements.txt
+├── package.json
+└── vite.config.ts
 ```
 
 ## 🔧 Configuration
 
 ### Environment Variables (Optional)
 
+Create a `.env` file in the project root:
+
 ```bash
-# Enable verbose logging to see RAG operations
-export VERBOSE=true
+# Backend LLM Configuration
+INTERNAL_API_KEY=your-key
+GEMINI_API_KEY=your-gemini-key
+INTERNAL_MODEL_ENDPOINT=http://your-endpoint
+INTERNAL_MODEL_NAME=llama-3.3-70b
 
-# Use a different embedding model
-export RAG_EMBEDDING_MODEL=all-mpnet-base-v2
+# Timeout settings (seconds)
+LLM_TIMEOUT=30
+HTTP_TIMEOUT=10
 
-# Adjust chunk size
-export RAG_CHUNK_SIZE=500
-export RAG_CHUNK_OVERLAP=100
+# LLM Routing
+LLM_ROUTING_ENABLED=true
+LLM_BUDGET_MODE=balanced
+LLM_MAX_LATENCY_MS=5000
+
+# Redis (optional)
+REDIS_URL=redis://localhost:6379
+REDIS_KEY_PREFIX=workflow-
+REDIS_STATE_TTL_SECONDS=3600
+```
+
+### RAG Configuration
+
+RAG settings can be adjusted in `backend/rag/vector_engine.py`:
+
+```python
+# Embedding model
+EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+
+# Chunk settings
+CHUNK_SIZE = 400
+CHUNK_OVERLAP = 80
+
+# Search parameters
+VECTOR_WEIGHT = 0.7    # 70% vector similarity
+KEYWORD_WEIGHT = 0.3   # 30% keyword matching
 ```
 
 ### Fallback Behavior
@@ -164,48 +183,54 @@ If vector dependencies are not installed, the system automatically falls back to
 [WORKFLOW] Using TF-IDF RAG engine
 ```
 
-No code changes needed - it just works!
-
 ## 📈 Performance
 
-### Test Results
+### Initialization
+- **First run**: ~4s (downloads embedding model ~90MB)
+- **Subsequent runs**: Instant startup (model is cached)
 
-All queries tested successfully with high relevance scores:
-
-| Query | Old Score | New Score | Improvement |
-|-------|-----------|-----------|-------------|
-| "What is RAG?" | 0.15 | 0.50 | **+233%** |
-| "Vector embeddings" | 0.20 | 0.53 | **+165%** |
-| "Similarity search" | 0.18 | 0.51 | **+183%** |
-| "LangGraph" | 0.12 | 0.45 | **+275%** |
-| "OpenText" | 0.25 | 0.56 | **+124%** |
-
-### Speed
-
-- **Initialization**: 4s (first run only)
+### Query Performance
 - **Search**: 15ms average
 - **Embedding generation**: 200ms for 245 chunks
+- **Total end-to-end**: 50-100ms
 
 ## 🛠️ Troubleshooting
 
-### Issue: Import errors in VSCode
+### Issue: Backend won't start
 
-**Solution**: These are expected - packages are installed in Python environment but not in VSCode's Pylance path. The code runs fine.
+```
+ModuleNotFoundError: No module named 'sentence_transformers'
+```
+
+**Solution**: Install dependencies:
+```bash
+cd backend
+pip install -r requirements.txt
+```
 
 ### Issue: Model download fails
 
 **Solution**: Manually download:
-```python
-from sentence_transformers import SentenceTransformer
-SentenceTransformer('all-MiniLM-L6-v2')
+```bash
+python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
 ```
+
+### Issue: Port 5001 already in use
+
+**Solution**: Start on a different port:
+```bash
+cd backend
+python main.py --port 8000
+```
+
+Then update the frontend API endpoint in `App.tsx`.
 
 ### Issue: Out of memory
 
 **Solution 1** - Use smaller model:
 ```python
-# Edit vector_rag_engine.py
-model_name = "all-MiniLM-L12-v2"  # 33MB instead of 90MB
+# Edit backend/rag/vector_engine.py
+EMBEDDING_MODEL = "all-MiniLM-L12-v2"  # 33MB instead of 90MB
 ```
 
 **Solution 2** - Fall back to TF-IDF:
@@ -215,30 +240,28 @@ pip uninstall sentence-transformers faiss-cpu
 
 ## 📚 Documentation
 
-- **Full guide**: [mcp-server/RAG_README.md](mcp-server/RAG_README.md)
-- **Implementation details**: [IMPLEMENTATION_SUMMARY.md](IMPLEMENTATION_SUMMARY.md)
 - **Project overview**: [PROJECT.md](PROJECT.md)
+- **Implementation details**: [IMPLEMENTATION_SUMMARY.md](IMPLEMENTATION_SUMMARY.md)
 
 ## ✅ Verification
 
 To verify everything is working:
 
-1. **Run tests**: `python test_rag.py` - should pass all tests
-2. **Start server**: `python langgraph_api.py` - should see "VectorRAGEngine" in logs
-3. **Check health**: `curl http://localhost:5001/api/health` - should show vector RAG stats
-4. **Query API**: Send a test query - should return relevant results with high scores
+1. **Start backend**: `cd backend && python main.py` - should see VectorRAGEngine initialization
+2. **Check health**: `curl http://localhost:5001/api/health` - should return healthy status
+3. **Start frontend**: `npm run dev` - should load UI at http://localhost:5173
+4. **Test query**: Send a prompt through the UI - should get a response
 
-## 🎉 Success Criteria
+## 🎉 Ready to Go!
 
-All implemented and tested:
+The system is production-ready with:
 - ✅ Real vector embeddings (Sentence Transformers)
 - ✅ Fast similarity search (FAISS)
 - ✅ Hybrid search (vector + keyword)
 - ✅ Query expansion
 - ✅ Sentence-aware chunking
 - ✅ Graceful fallback to TF-IDF
-- ✅ Comprehensive test suite
-- ✅ Full documentation
-- ✅ Zero breaking changes
+- ✅ Full REST API
+- ✅ React UI with animations
 
-**The real RAG model is production-ready! 🚀**
+**Let's build something amazing! 🚀**

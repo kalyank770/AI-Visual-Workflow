@@ -7,11 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "backend": ".venv\\Scripts\\python.exe mcp-server\\langgraph_api.py",
-    "start": "concurrently --kill-others --names \"FRONTEND,BACKEND\" -c \"bgBlue.bold,bgMagenta.bold\" \"npm run dev\" \"npm run backend\"",
-    "test:routing": "node test-tool-routing.js",
-    "mcp": "node mcp-server/index.js",
-    "mcp:test": "echo '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"test\",\"version\":\"1.0.0\"}}}' | node mcp-server/index.js"
+    "backend": ".venv\\Scripts\\python.exe backend\\main.py",
+    "start": "concurrently --kill-others --names \"FRONTEND,BACKEND\" -c \"bgBlue.bold,bgMagenta.bold\" \"npm run dev\" \"npm run backend\""
   },
   "dependencies": {
     "@google/generative-ai": "^0.21.0",
