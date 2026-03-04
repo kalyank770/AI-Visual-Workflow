@@ -95,9 +95,8 @@ const App: React.FC = () => {
     "kb",
     "sop",
     "handbook",
-    "opentext",
-    "open text",
-    "otex",
+    // Note: Generic "opentext", "open text", "otex" removed — queries about the company should use web search
+    // Specific product names trigger RAG for internal documentation:
     "otcs",
     "content server",
     "documentum",
@@ -742,25 +741,6 @@ const App: React.FC = () => {
 
     if (step === WorkflowStep.LLM_TO_LG_PLAN && plannerEntry?.reasoning) {
       details = `${details} | Planner reasoning: ${plannerEntry.reasoning}`;
-    }
-
-    if ((step === WorkflowStep.RAG_TO_VDB || step === WorkflowStep.VDB_TO_RAG || step === WorkflowStep.RAG_TO_LG) && ragEntry) {
-      const chunks = typeof ragEntry.chunks_found === 'number' ? ragEntry.chunks_found : 0;
-      const searchTime = typeof ragEntry.search_time_ms === 'number' ? `${ragEntry.search_time_ms}ms` : 'n/a';
-      details = `${details} | RAG Stats: chunks=${chunks}, search=${searchTime}`;
-    }
-
-    if ((step === WorkflowStep.LG_TO_MCP || step === WorkflowStep.MCP_TO_LG) && toolEntry) {
-      const count = typeof toolEntry.tools_executed === 'number' ? toolEntry.tools_executed : 0;
-      const toolNames = Array.isArray(toolEntry.tool_names) ? toolEntry.tool_names.join(', ') : 'none';
-      const execTime = typeof toolEntry.execution_time_ms === 'number' ? `${toolEntry.execution_time_ms}ms` : 'n/a';
-      details = `${details} | Tool Stats: count=${count}, names=[${toolNames}], time=${execTime}`;
-    }
-
-    if (step === WorkflowStep.LLM_TO_LG_EVAL && synthEntry) {
-      const model = synthEntry.model || 'unknown';
-      const length = typeof synthEntry.response_length === 'number' ? `${synthEntry.response_length} chars` : 'generated';
-      details = `${details} | Synthesized by ${model} (${length})`;
     }
 
     return {

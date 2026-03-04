@@ -88,6 +88,15 @@ except ImportError:
     except ImportError:
         sys.exit("Error: langgraph required. Run: pip install langgraph")
 
+# ── Document Loader ────────────────────────────────────
+try:
+    from document_loader import load_all_documents, add_document
+    has_doc_loader = True
+except ImportError:
+    has_doc_loader = False
+    load_all_documents = None
+    add_document = None
+
 
 # ═══════════════════════════════════════════════════════════
 #  CONFIGURATION
@@ -207,7 +216,26 @@ def get_persistence_status() -> dict:
 #  BUILT-IN KNOWLEDGE BASE (for RAG)
 # ═══════════════════════════════════════════════════════════
 
-KNOWLEDGE_BASE = [
+# ═══════════════════════════════════════════════════════════
+#  KNOWLEDGE BASE — Dynamic Loading from Files
+# ═══════════════════════════════════════════════════════════
+
+# Try to load documents from /data folder; fallback to inline docs if empty
+if has_doc_loader and load_all_documents:
+    try:
+        data_dir = os.path.join(os.path.dirname(__file__), "data")
+        KNOWLEDGE_BASE = load_all_documents(data_dir)
+        _log(f"Loaded {len(KNOWLEDGE_BASE)} documents from {data_dir}")
+    except Exception as e:
+        _log(f"Failed to load documents: {e}")
+        KNOWLEDGE_BASE = _get_default_knowledge_base()
+else:
+    KNOWLEDGE_BASE = _get_default_knowledge_base()
+
+
+def _get_default_knowledge_base() -> list[dict]:
+    """Fallback knowledge base when document loader is not available."""
+    return [
     {
         "title": "Agentic AI Architecture Guide",
         "content": (
@@ -302,107 +330,132 @@ KNOWLEDGE_BASE = [
             "AWS, Azure, and Google Cloud."
         ),
     },
-]
+    ]
 
 
 # ═══════════════════════════════════════════════════════════
-#  RAG ENGINE — TF-IDF retrieval, zero external dependencies
+#  RAG ENGINE — Real vector embeddings with ChromaDB
 # ═══════════════════════════════════════════════════════════
 
+# Import the new vector RAG engine
+try:
+    from vector_rag_engine import create_rag_engine, VectorRAGEngine, TFIDFRAGEngine
+    _log("Vector RAG engine module loaded successfully")
+except ImportError as e:
+    _log(f"Failed to import vector_rag_engine: {e}")
+    # Fallback to inline TF-IDF implementation
+    class RAGEngine:
+        """Lightweight retrieval engine using TF-IDF vectorization and cosine similarity."""
 
-class RAGEngine:
-    """Lightweight retrieval engine using TF-IDF vectorization and cosine similarity."""
+        def __init__(self, documents: list[dict], chunk_size: int = 300, chunk_overlap: int = 60):
+            self.chunks: list[dict] = []
+            self.idf: dict[str, float] = {}
+            self.chunk_vectors: list[dict[str, float]] = []
+            self._chunk_documents(documents, chunk_size, chunk_overlap)
+            self._build_index()
+            _log(f"RAG Engine: {len(documents)} docs → {len(self.chunks)} chunks indexed")
 
-    def __init__(self, documents: list[dict], chunk_size: int = 300, chunk_overlap: int = 60):
-        self.chunks: list[dict] = []
-        self.idf: dict[str, float] = {}
-        self.chunk_vectors: list[dict[str, float]] = []
-        self._chunk_documents(documents, chunk_size, chunk_overlap)
-        self._build_index()
-        _log(f"RAG Engine: {len(documents)} docs → {len(self.chunks)} chunks indexed")
+        @staticmethod
+        def _tokenize(text: str) -> list[str]:
+            """Split text into lowercase alphanumeric tokens."""
+            return re.findall(r"[a-z0-9]+", text.lower())
 
-    @staticmethod
-    def _tokenize(text: str) -> list[str]:
-        """Split text into lowercase alphanumeric tokens."""
-        return re.findall(r"[a-z0-9]+", text.lower())
+        def _chunk_documents(self, docs: list[dict], size: int, overlap: int):
+            """Split documents into overlapping chunks, breaking at sentence boundaries."""
+            for doc in docs:
+                text = doc["content"]
+                title = doc["title"]
+                pos, idx = 0, 0
+                while pos < len(text):
+                    end = min(pos + size, len(text))
+                    # Try to break at a sentence boundary
+                    if end < len(text):
+                        last_period = text.rfind(". ", pos, end)
+                        if last_period > pos + size // 2:
+                            end = last_period + 2
+                    self.chunks.append(
+                        {
+                            "content": text[pos:end].strip(),
+                            "source": title,
+                            "chunk_index": idx,
+                            "char_start": pos,
+                            "char_end": end,
+                        }
+                    )
+                    pos = max(pos + 1, end - overlap)
+                    idx += 1
 
-    def _chunk_documents(self, docs: list[dict], size: int, overlap: int):
-        """Split documents into overlapping chunks, breaking at sentence boundaries."""
-        for doc in docs:
-            text = doc["content"]
-            title = doc["title"]
-            pos, idx = 0, 0
-            while pos < len(text):
-                end = min(pos + size, len(text))
-                # Try to break at a sentence boundary
-                if end < len(text):
-                    last_period = text.rfind(". ", pos, end)
-                    if last_period > pos + size // 2:
-                        end = last_period + 2
-                self.chunks.append(
-                    {
-                        "content": text[pos:end].strip(),
-                        "source": title,
-                        "chunk_index": idx,
-                        "char_start": pos,
-                        "char_end": end,
-                    }
-                )
-                pos = max(pos + 1, end - overlap)
-                idx += 1
+        def _build_index(self):
+            """Compute IDF across the corpus and TF-IDF vectors per chunk."""
+            N = len(self.chunks)
+            if N == 0:
+                return
+            all_tokens = [self._tokenize(c["content"]) for c in self.chunks]
+            # Inverse Document Frequency
+            doc_freq: dict[str, int] = {}
+            for tokens in all_tokens:
+                for t in set(tokens):
+                    doc_freq[t] = doc_freq.get(t, 0) + 1
+            self.idf = {t: math.log((N + 1) / (1 + df)) for t, df in doc_freq.items()}
+            # TF-IDF vectors
+            for tokens in all_tokens:
+                tf = Counter(tokens)
+                total = len(tokens) or 1
+                vec = {t: (c / total) * self.idf.get(t, 0) for t, c in tf.items()}
+                self.chunk_vectors.append(vec)
 
-    def _build_index(self):
-        """Compute IDF across the corpus and TF-IDF vectors per chunk."""
-        N = len(self.chunks)
-        if N == 0:
-            return
-        all_tokens = [self._tokenize(c["content"]) for c in self.chunks]
-        # Inverse Document Frequency
-        doc_freq: dict[str, int] = {}
-        for tokens in all_tokens:
-            for t in set(tokens):
-                doc_freq[t] = doc_freq.get(t, 0) + 1
-        self.idf = {t: math.log((N + 1) / (1 + df)) for t, df in doc_freq.items()}
-        # TF-IDF vectors
-        for tokens in all_tokens:
+        @staticmethod
+        def _cosine_sim(v1: dict[str, float], v2: dict[str, float]) -> float:
+            """Compute cosine similarity between two sparse TF-IDF vectors."""
+            shared = set(v1) & set(v2)
+            if not shared:
+                return 0.0
+            dot = sum(v1[k] * v2[k] for k in shared)
+            n1 = math.sqrt(sum(x * x for x in v1.values()))
+            n2 = math.sqrt(sum(x * x for x in v2.values()))
+            return dot / (n1 * n2) if n1 and n2 else 0.0
+
+        def search(self, query: str, top_k: int = 5) -> list[dict]:
+            """Search the index for chunks most relevant to the query."""
+            tokens = self._tokenize(query)
+            if not tokens:
+                return []
             tf = Counter(tokens)
-            total = len(tokens) or 1
-            vec = {t: (c / total) * self.idf.get(t, 0) for t, c in tf.items()}
-            self.chunk_vectors.append(vec)
-
-    @staticmethod
-    def _cosine_sim(v1: dict[str, float], v2: dict[str, float]) -> float:
-        """Compute cosine similarity between two sparse TF-IDF vectors."""
-        shared = set(v1) & set(v2)
-        if not shared:
-            return 0.0
-        dot = sum(v1[k] * v2[k] for k in shared)
-        n1 = math.sqrt(sum(x * x for x in v1.values()))
-        n2 = math.sqrt(sum(x * x for x in v2.values()))
-        return dot / (n1 * n2) if n1 and n2 else 0.0
-
-    def search(self, query: str, top_k: int = 5) -> list[dict]:
-        """Search the index for chunks most relevant to the query."""
-        tokens = self._tokenize(query)
-        if not tokens:
-            return []
-        tf = Counter(tokens)
-        total = len(tokens)
-        q_vec = {t: (c / total) * self.idf.get(t, 0) for t, c in tf.items()}
-        scored = []
-        for i, c_vec in enumerate(self.chunk_vectors):
-            score = self._cosine_sim(q_vec, c_vec)
-            if score > 0.01:
-                scored.append((score, i))
-        scored.sort(key=lambda x: -x[0])
-        return [
-            {"chunk": self.chunks[i], "score": round(s, 4), "method": "tfidf"}
-            for s, i in scored[:top_k]
-        ]
+            total = len(tokens)
+            q_vec = {t: (c / total) * self.idf.get(t, 0) for t, c in tf.items()}
+            scored = []
+            for i, c_vec in enumerate(self.chunk_vectors):
+                score = self._cosine_sim(q_vec, c_vec)
+                if score > 0.01:
+                    scored.append((score, i))
+            scored.sort(key=lambda x: -x[0])
+            return [
+                {"chunk": self.chunks[i], "score": round(s, 4), "method": "tfidf"}
+                for s, i in scored[:top_k]
+            ]
+        
+        def get_stats(self) -> dict:
+            """Get statistics about the indexed data."""
+            return {
+                "total_documents": len(self.chunks),
+                "total_chunks": len(self.chunks),
+                "method": "TF-IDF (fallback)",
+            }
+    
+    create_rag_engine = lambda docs, **kwargs: RAGEngine(docs, **kwargs)
 
 
 # Singleton RAG engine — initialized once at import time
-_rag_engine = RAGEngine(KNOWLEDGE_BASE)
+# Uses VectorRAGEngine if available, falls back to TF-IDF
+try:
+    _rag_engine = create_rag_engine(KNOWLEDGE_BASE)
+    _rag_type = type(_rag_engine).__name__
+    _log(f"Initialized {_rag_type} successfully")
+except Exception as e:
+    _log(f"Failed to initialize RAG engine: {e}")
+    # Final fallback to basic TF-IDF
+    _rag_engine = RAGEngine(KNOWLEDGE_BASE) if 'RAGEngine' in locals() else None
+    _log("Using fallback TF-IDF RAG engine")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -581,7 +634,7 @@ def tool_weather(city: str) -> str | None:
 
 
 def tool_wikipedia(topic: str) -> str | None:
-    """Fetch Wikipedia summary (free, no key)."""
+    """Fetch Wikipedia summary with infobox data for leadership info (free, no key)."""
     data = _http_get(
         f"https://en.wikipedia.org/api/rest_v1/page/summary/{topic.replace(' ', '_')}",
         headers={"Accept": "application/json"},
@@ -601,11 +654,39 @@ def tool_wikipedia(topic: str) -> str | None:
             )
     if not data or "extract" not in data:
         return None
+    
     title = data.get("title", topic)
     extract = data["extract"]
     if len(extract) > 800:
         extract = extract[:800].rsplit(". ", 1)[0] + "."
-    return f"Wikipedia — {title}: {extract}"
+    
+    # Try to fetch infobox data for leadership information
+    page_title = data.get("title", topic)
+    infobox_data = _http_get(
+        f"https://en.wikipedia.org/w/api.php"
+        f"?action=query&prop=revisions&rvprop=content&rvslots=main&titles={page_title.replace(' ', '_')}"
+        f"&format=json&formatversion=2"
+    )
+    
+    # Extract CEO/leadership info from infobox if available
+    leadership_info = ""
+    if infobox_data and "query" in infobox_data and "pages" in infobox_data["query"]:
+        pages = infobox_data["query"]["pages"]
+        if pages and len(pages) > 0:
+            content = pages[0].get("revisions", [{}])[0].get("slots", {}).get("main", {}).get("content", "")
+            # Look for common infobox fields for leadership
+            ceo_match = re.search(r'\|\s*(?:key_people|ceo|CEO|leader_name)\s*=\s*([^\n|]+)', content, re.IGNORECASE)
+            if ceo_match:
+                ceo_text = ceo_match.group(1).strip()
+                # Clean up wiki markup
+                ceo_text = re.sub(r'\[\[(?:[^\]]+\|)?([^\]]+)\]\]', r'\1', ceo_text)
+                ceo_text = re.sub(r'{{[^}]+}}', '', ceo_text)
+                ceo_text = re.sub(r'<[^>]+>', '', ceo_text)
+                ceo_text = ceo_text.strip()
+                if ceo_text and len(ceo_text) < 200:
+                    leadership_info = f" | Leadership: {ceo_text}"
+    
+    return f"Wikipedia — {title}: {extract}{leadership_info}"
 
 
 def tool_dictionary(word: str) -> str | None:
@@ -906,6 +987,15 @@ def tool_currency(from_currency: str, to_currency: str, amount: float = 1.0) -> 
 # ═══════════════════════════════════════════════════════════
 
 
+def _llm_keys_available() -> bool:
+    """Return True when at least one LLM API key is configured."""
+    return bool(
+        os.environ.get("INTERNAL_API_KEY")
+        or os.environ.get("VITE_INTERNAL_API_KEY")
+        or os.environ.get("GEMINI_API_KEY")
+    )
+
+
 def run_tools(prompt: str) -> list[str]:
     """
     Intelligently route query to tools using LLM-based selection (primary) 
@@ -915,40 +1005,56 @@ def run_tools(prompt: str) -> list[str]:
     Only fall back to regex if LLM fails completely (timeout, parse error, etc).
     """
     
+    _log(f"\n{'='*80}")
+    _log(f"RUN_TOOLS CALLED: prompt='{prompt}'")
+    _log(f"{'='*80}\n")
+    
     # ════════════════════════════════════════════════════════════════
     #  PHASE 1: LLM-BASED TOOL SELECTION (PRIMARY METHOD)
     # ════════════════════════════════════════════════════════════════
     llm_tools = _llm_select_tools(prompt)
     
     if llm_tools:
-        _log(f"LLM tool selection succeeded. Tools selected: {[t['tool'] for t in llm_tools]}")
+        _log(f"\n✓ LLM tool selection SUCCEEDED")
+        _log(f"  Tools selected: {[t['tool'] for t in llm_tools]}")
+        _log(f"  Full tools: {llm_tools}\n")
+        
         results: list[str] = []
         for tool_call in llm_tools:
             tool_name = tool_call["tool"]
             entity = tool_call["entity"]
-            _log(f"  Executing LLM-selected tool: {tool_name} with entity: {entity}")
+            _log(f"  → Executing: {tool_name} with entity: '{entity}'")
             
             result = _execute_tool_call(tool_name, entity, original_prompt=prompt)
             if result:
                 results.append(result)
-                _log(f"    ✓ {tool_name} returned data")
+                _log(f"    ✓ {tool_name} returned: {result[:100]}...")
             else:
-                _log(f"    ✗ {tool_name} returned no data (entity might be invalid)")
+                _log(f"    ✗ {tool_name} returned None")
         
         # CRITICAL: If LLM selected tools, ALWAYS return (don't fall back to regex)
         # Even if some/all tools returned no data, that's the correct routing
         if results:
-            _log(f"✓ TOOLS (LLM ROUTING): {len(results)} tool(s) executed successfully")
+            _log(f"\n✓ FINAL: {len(results)} tool(s) executed successfully")
             return results
         else:
-            _log(f"⚠ TOOLS (LLM ROUTING): All {len(llm_tools)} tool(s) returned no data, but trusting LLM routing → empty result")
-            # Return a signal that routing was correct but data was unavailable
+            _log(f"\n⚠ FINAL: All tools returned no data, but trusting LLM routing")
             return [f"Tool [LLM-routing-success]: Query routed to {[t['tool'] for t in llm_tools]} but no data available"]
     
     # ════════════════════════════════════════════════════════════════
-    #  PHASE 2: REGEX FALLBACK (Only if LLM fails completely)
+    #  PHASE 2: FALLBACK STRATEGY
     # ════════════════════════════════════════════════════════════════
-    _log("✗ LLM tool selection FAILED (timeout/parse error) → falling back to regex")
+    # If LLM routing is enabled and keys are configured, avoid regex
+    # and use a general web search fallback instead.
+    if LLM_ROUTING_ENABLED and _llm_keys_available():
+        _log("\n✗ LLM tool selection FAILED → using web search fallback")
+        result = tool_web_search(prompt)
+        if result:
+            return [f"Tool [WebSearch]: {result}"]
+        return ["Tool [WebSearch]: Web search attempted but no results returned."]
+
+    # Otherwise, fall back to deterministic regex routing (no LLM available)
+    _log(f"\n✗ LLM tool selection FAILED → falling back to regex")
     return _regex_run_tools(prompt)
 
 
@@ -1051,12 +1157,23 @@ def _regex_run_tools(prompt: str) -> list[str]:
                 wiki_entity = _TICKER_TO_COMPANY.get(entity, entity)
                 _log(f"REGEX: converted ticker '{entity}' → '{wiki_entity}' for Wikipedia")
             
-            # ALWAYS call wikipedia for company background
-            wiki = tool_wikipedia(wiki_entity)
-            if wiki:
-                results.append(f"Tool [Wikipedia]: {wiki}")
+            # ─── Check for time-sensitive keywords (block Wikipedia) ───
+            has_time_sensitive = bool(
+                re.search(
+                    r"\b(current|latest|recent|new|live|today|now|recently|this\s+(?:week|month|year)|upcoming|\d{4})\b",
+                    lower,
+                )
+            )
+            
+            # ALWAYS call wikipedia for company background EXCEPT for time-sensitive queries
+            if not has_time_sensitive:
+                wiki_result = _execute_tool_call("wikipedia", wiki_entity, original_prompt=prompt)
+                if wiki_result:
+                    results.append(wiki_result)
+                else:
+                    _log(f"REGEX: wikipedia returned None for '{wiki_entity}'")
             else:
-                _log(f"REGEX: wikipedia returned None for '{wiki_entity}'")
+                _log(f"REGEX: Skipping Wikipedia for time-sensitive prediction query: '{prompt}'")
         else:
             _log(f"REGEX: Could not extract entity from prediction query: '{prompt}'")
 
@@ -1126,8 +1243,20 @@ def _regex_run_tools(prompt: str) -> list[str]:
         r"\b(ceo|president|founder|chairman|cto|cfo|headquarters|revenue|employees|founded)\b",
         lower,
     )
-    if any(w in lower for w in wiki_triggers) or leadership:
-        if leadership or not results:  # Always run for leadership queries
+    # Check for time-sensitive keywords (highest priority — prefer web search)
+    has_time_sensitive = bool(
+        re.search(
+            r"\b(current|latest|recent|new|live|today|now|recently|this\s+(?:week|month|year)|upcoming|\d{4})\b",
+            lower,
+        )
+    )
+
+    if has_time_sensitive:
+        return "mcp_only", "[regex] Time-sensitive query → external tools."
+    
+    # Skip Wikipedia for time-sensitive queries; use web search instead
+    if (any(w in lower for w in wiki_triggers) or leadership) and not has_time_sensitive:
+        if leadership or not results:  # Always run for leadership queries (unless time-sensitive)
             topic = _extract_entity(
                 prompt,
                 [
@@ -1138,9 +1267,35 @@ def _regex_run_tools(prompt: str) -> list[str]:
                 ],
             )
             if topic:
-                result = tool_wikipedia(topic)
-                if result:
-                    results.append(f"Tool [Wikipedia]: {result}")
+                wiki_result = _execute_tool_call("wikipedia", topic, original_prompt=prompt)
+                if wiki_result:
+                    results.append(wiki_result)
+    
+    # If leadership query is time-sensitive, use web search instead
+    if leadership and has_time_sensitive and not results:
+        # Extract entity and call web search
+        topic = _extract_entity(
+            prompt,
+            [
+                r"(?:who is|who was)\s+(.+?)(?:\?|$)",
+                r"(.+?)\s+(?:ceo|president|founder|chairman|cto|cfo)",
+            ],
+        )
+        if topic:
+            # Actually call the web search tool
+            result = tool_web_search(f"{topic} current CEO latest news")
+            if result:
+                results.append(f"Tool [WebSearch]: {result}")
+                _log(f"REGEX: time-sensitive leadership query → web search for '{topic}'")
+            
+            # If web search returned nothing useful (generic fallback message), try Wikipedia
+            # Wikipedia often has current CEO information in company articles
+            if not result or "For real-time results" in result:
+                _log(f"REGEX: web search insufficient, falling back to Wikipedia for '{topic}'")
+                wiki_result = _execute_tool_call("wikipedia", topic, original_prompt=prompt)
+                if wiki_result:
+                    results.append(wiki_result)
+                    _log(f"REGEX: Wikipedia fallback provided company info for '{topic}'")
 
     # ── Time / Timezone Detection ──
     is_time_query = any(w in lower for w in ("time in", "time at", "what time", "timezone", "clock")) or bool(re.search(r"\d+\s*(?:am|pm)\s+\w+\s+to\s+\w+", lower))
@@ -1238,18 +1393,29 @@ def _regex_run_tools(prompt: str) -> list[str]:
             results.append(f"Tool [WebSearch]: {result}")
         else:
             # ── Wikipedia Final Fallback (when web search also returned nothing) ──
-            topic = _extract_entity(
-                prompt,
-                [
-                    r"(?:tell\s+(?:me\s+)?about|who\s+is|who\s+was|what\s+is|what\s+are|explain|describe)\s+(.+?)(?:\?|$)",
-                    r"(?:how\s+does|how\s+do|how\s+is)\s+(.+?)\s+(?:work|function|operate)(?:\?|$)",
-                    r"^(.{3,60})(?:\?|$)",
-                ],
+            # BUT: Skip Wikipedia for time-sensitive queries even as fallback
+            has_time_sensitive = bool(
+                re.search(
+                    r"\b(current|latest|recent|new|live|today|now|recently|this\s+(?:week|month|year)|upcoming|\d{4})\b",
+                    prompt.lower(),
+                )
             )
-            if topic:
-                wiki = tool_wikipedia(topic)
-                if wiki:
-                    results.append(f"Tool [Wikipedia]: {wiki}")
+            
+            if not has_time_sensitive:
+                topic = _extract_entity(
+                    prompt,
+                    [
+                        r"(?:tell\s+(?:me\s+)?about|who\s+is|who\s+was|what\s+is|what\s+are|explain|describe)\s+(.+?)(?:\?|$)",
+                        r"(?:how\s+does|how\s+do|how\s+is)\s+(.+?)\s+(?:work|function|operate)(?:\?|$)",
+                        r"^(.{3,60})(?:\?|$)",
+                    ],
+                )
+                if topic:
+                    wiki_result = _execute_tool_call("wikipedia", topic, original_prompt=prompt)
+                    if wiki_result:
+                        results.append(wiki_result)
+            else:
+                _log(f"REGEX: Blocked Wikipedia fallback for time-sensitive query: '{prompt}'")
 
     return results
 
@@ -1681,18 +1847,23 @@ def _call_gemini_llm(
 _ROUTE_CLASSIFIER_PROMPT = """\
 You are an intent classifier for an AI assistant. Given the user's query, classify it into exactly ONE route.
 
+*** CRITICAL: Time-Sensitive Keywords Take Priority ***
+If the query contains time-sensitive keywords (current, latest, recent, new, live, today, now, this week, this month, 2024, 2025, 2026),
+ALWAYS prefer "mcp_only" for real-world entities OR "hybrid" for OpenText queries. Do NOT use "rag_only" for time-sensitive requests.
+
 Routes:
-- "rag_only": Query about internal knowledge topics ONLY — these live in our document store:
+- "rag_only": Query about internal knowledge topics ONLY (and NOT time-sensitive) — these live in our document store:
   OpenText products (OTCS, Content Server, Documentum, xECM, Exstream, TeamSite, AppWorks, Fortify, ArcSight, NetIQ, Voltage, EnCase, LoadRunner, SMAX, Magellan, Aviator, Trading Grid),
   RAG / retrieval-augmented generation, LangGraph, LangChain, MCP protocol, agentic AI architecture, embeddings, vector databases, AI pipelines and orchestration.
 
 - "mcp_only": Query that needs external tools or real-time data — weather, stock prices,
   stock predictions/forecasts, time/timezone, math calculations, word definitions,
-  Wikipedia lookups, general knowledge questions, any factual question about real-world
-  entities, people, places, events, companies (other than OpenText internal docs).
+  Wikipedia lookups, general knowledge questions, current events, people's recent activities,
+  company leadership (CEO, CFO, executives), earnings, latest news, any time-sensitive factual question.
 
-- "hybrid": Query that is specifically about OpenText (the company) AND also needs
-  real-time or factual data (e.g., "OpenText stock price", "OpenText CEO", "OpenText revenue").
+- "hybrid": Query that is about OpenText (the company/corporation/leadership) AND needs
+  real-time or current information (e.g., "OpenText stock price", "OpenText CEO", "OpenText latest news", "OpenText revenue 2025").
+  Note: Use hybrid ONLY if explicitly about the OpenText company. If asking about OpenText products/features, use rag_only.
 
 - "direct": Simple greetings (hi, hello, hey, thanks, bye), chitchat, or trivial
   conversation that needs no data lookup at all.
@@ -1797,16 +1968,47 @@ def _is_prediction_query(prompt: str) -> bool:
 
 def _postprocess_llm_tools(tools: list[dict], prompt: str) -> list[dict]:
     """Deterministic corrections on LLM tool selections — fixes known LLM mistakes."""
+    lower = prompt.lower()
     is_prediction = _is_prediction_query(prompt)
+    
+    # ─── Check for time-sensitive keywords (highest priority) ───
+    has_time_sensitive = bool(
+        re.search(
+            r"\b(current|latest|recent|new|live|today|now|recently|this\s+(?:week|month|year)|upcoming|\d{4})\b",
+            lower,
+        )
+    )
+    
+    original_tools = [t["tool"] for t in tools]
+    _log(f"\n>>> POST-PROCESS START: prompt='{prompt}'")
+    _log(f"    Original tools: {original_tools}")
+    _log(f"    Has time-sensitive: {has_time_sensitive}")
+    _log(f"    Is prediction: {is_prediction}")
+    
+    # If time-sensitive, prefer web_search over wikipedia (wikipedia is static/outdated)
+    if has_time_sensitive:
+        _log(f"    TIME-SENSITIVE DETECTED - Converting tools...")
+        # Replace any wikipedia calls with web_search for current/latest queries
+        modified = False
+        for t in tools:
+            if t["tool"] == "wikipedia":
+                old_tool = t["tool"]
+                t["tool"] = "web_search"
+                modified = True
+                _log(f"    ✓ Converted: {old_tool} → {t['tool']}")
+        if not modified:
+            _log(f"    No Wikipedia tools found to convert")
+        _log(f"    Final tools after time-sensitive block: {[t['tool'] for t in tools]}")
     
     # Aggressive fix: convert stock_price to stock_analysis for ANY query with prediction keywords
     for t in tools:
         if t["tool"] == "stock_price" and is_prediction:
             t["tool"] = "stock_analysis"
-            _log(f"POST-PROCESS: forced stock_price → stock_analysis (prediction query)")
+            _log(f"    POST-PROCESS: forced stock_price → stock_analysis (prediction query)")
     
     # For prediction queries, ENFORCE stock_analysis + wikipedia together
-    if is_prediction:
+    # BUT: Skip wikipedia addition if query is time-sensitive (already converted to web_search above)
+    if is_prediction and not has_time_sensitive:
         has_stock_analysis = any(t["tool"] == "stock_analysis" for t in tools)
         has_wikipedia = any(t["tool"] == "wikipedia" for t in tools)
         
@@ -1816,7 +2018,7 @@ def _postprocess_llm_tools(tools: list[dict], prompt: str) -> list[dict]:
             stock_entity = _extract_stock_entity_from_prompt(prompt)
             if stock_entity:
                 tools.append({"tool": "stock_analysis", "entity": stock_entity})
-                _log(f"POST-PROCESS: added stock_analysis('{stock_entity}') for prediction query")
+                _log(f"    POST-PROCESS: added stock_analysis('{stock_entity}') for prediction query")
                 has_stock_analysis = True
         
         # If we have stock_analysis but no wikipedia, add it
@@ -1855,7 +2057,7 @@ def _postprocess_llm_tools(tools: list[dict], prompt: str) -> list[dict]:
             
             if wiki_entity:
                 tools.append({"tool": "wikipedia", "entity": wiki_entity})
-                _log(f"POST-PROCESS: added wikipedia('{wiki_entity}') for prediction context")
+                _log(f"    POST-PROCESS: added wikipedia('{wiki_entity}') for prediction context")
         
         # Remove web_search with stock terms (DuckDuckGo can't do stock forecasts)
         tools = [t for t in tools if not (
@@ -1863,6 +2065,7 @@ def _postprocess_llm_tools(tools: list[dict], prompt: str) -> list[dict]:
             any(w in t["entity"].lower() for w in ("stock", "forecast", "prediction", "analysis"))
         )]
     
+    _log(f"<<< POST-PROCESS END: Final tools = {[t['tool'] for t in tools]}\n")
     return tools
 
 
@@ -1943,6 +2146,8 @@ def _llm_select_tools(prompt: str) -> list[dict] | None:
         
         if tools_found:
             _log(f"✓ LLM tool select (free-text fallback): {tools_found} via {model}")
+            # Apply post-processing to fix known mistakes
+            tools_found = _postprocess_llm_tools(tools_found, prompt)
             return tools_found
     except Exception as e:
         _log(f"LLM tool select: free-text parse error: {e}")
@@ -1985,8 +2190,28 @@ def _extract_stock_entity_from_prompt(prompt: str) -> str | None:
 
 def _execute_tool_call(tool_name: str, entity: str, original_prompt: str = "") -> str | None:
     """Execute a single tool call by name. Returns the formatted result string or None."""
+    _log(f"\n  _execute_tool_call: tool={tool_name}, entity='{entity}'")
+    
+    # ═══ ABSOLUTE GUARD: Block Wikipedia for time-sensitive queries ═══
+    if tool_name == "wikipedia":
+        has_time_sensitive = bool(
+            re.search(
+                r"\b(current|latest|recent|new|live|today|now|recently|this\s+(?:week|month|year)|upcoming|\d{4})\b",
+                original_prompt.lower(),
+            )
+        )
+        _log(f"  Wikipedia check: prompt='{original_prompt[:50]}...', has_time_sensitive={has_time_sensitive}")
+        if has_time_sensitive:
+            _log("  ⚠ GUARD: Wikipedia blocked → using web search instead")
+            result = tool_web_search(original_prompt)
+            if result:
+                return f"Tool [WebSearch]: {result}"
+            return "Tool [WebSearch]: Web search attempted but no results returned."
+        else:
+            _log(f"  ✓ GUARD PASSED: Allowing Wikipedia (not time-sensitive)")
+    
     if not entity or not entity.strip():
-        _log(f"Skipping {tool_name}: empty entity")
+        _log(f"  Skipping {tool_name}: empty entity")
         return None
     entity = entity.strip()
 
@@ -2132,6 +2357,14 @@ def _regex_classify_route(prompt: str) -> tuple[str, str]:
     """Regex-based fallback for intent classification (used when LLM is unavailable)."""
     lower = prompt.lower()
 
+    # ─── Check for time-sensitive keywords FIRST (highest priority) ───
+    has_time_sensitive = bool(
+        re.search(
+            r"\b(current|latest|recent|new|live|today|now|recently|this\s+(?:week|month|year)|upcoming|\d{4})\b",
+            lower,
+        )
+    )
+
     is_opentext_product = bool(
         re.search(
             r"\b(otcs|content\s*server|documentum|extended\s*ecm|xecm|exstream|"
@@ -2194,11 +2427,22 @@ def _regex_classify_route(prompt: str) -> tuple[str, str]:
         return "mcp_only", "[regex] Time/timezone query → world clock tool."
     if is_dictionary:
         return "mcp_only", "[regex] Dictionary/definition query → dictionary tool."
+    
+    # ═══ TIME-SENSITIVE QUERIES (Priority Override) ═══
+    # If query has time-sensitive keywords, prioritize real-time data sources
+    if has_time_sensitive:
+        if is_opentext_general or (is_opentext_product and is_factual):
+            # "opentext ceo latest" → hybrid (OpenText company info + current data)
+            return "hybrid", "[regex] OpenText + time-sensitive → RAG + web search."
+        if is_rag_preferred or is_factual or needs_web:
+            # Time-sensitive + factual = use web search, not RAG
+            return "mcp_only", "[regex] Time-sensitive query → prioritize real-time data."
+    
     if is_prediction and needs_realtime:
         return "mcp_only", "[regex] Prediction/forecast query → web search."
     if is_opentext_product and not needs_realtime:
         return "rag_only", "[regex] OpenText product query → internal docs."
-    if is_rag_preferred and not needs_realtime:
+    if is_rag_preferred and not needs_realtime and not has_time_sensitive:
         return "rag_only", "[regex] Internal knowledge query → document store."
     if (is_opentext_general or is_rag_preferred) and (needs_realtime or is_factual) and not is_prediction:
         return "hybrid", "[regex] Knowledge query + real-time data → RAG + MCP."
@@ -2226,9 +2470,14 @@ def planner_node(state: AgentState) -> dict:
             route, reasoning = llm_result
             reasoning = f"[LLM] {reasoning}"
         else:
-            # ─── Regex Fallback (when LLM is unavailable) ───
-            _log("PLANNER: LLM unavailable, falling back to regex classification")
-            route, reasoning = _regex_classify_route(prompt)
+            # ─── Fallback Strategy ───
+            if _llm_keys_available():
+                _log("PLANNER: LLM failed despite keys; defaulting to mcp_only")
+                route, reasoning = "mcp_only", "[LLM-fallback] Defaulted to tools for external context."
+            else:
+                # ─── Regex Fallback (when LLM is unavailable) ───
+                _log("PLANNER: LLM unavailable, falling back to regex classification")
+                route, reasoning = _regex_classify_route(prompt)
 
     _log(f"PLANNER: route={route} | {reasoning}")
 

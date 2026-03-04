@@ -115,6 +115,8 @@ class HealthResponse(BaseModel):
     knowledge_docs: int
     llm_available: dict
     persistence: dict
+    rag_engine_type: str = "unknown"
+    rag_engine_info: dict = {}
 
 
 class GraphInfoResponse(BaseModel):
@@ -337,11 +339,27 @@ async def api_health():
         or os.environ.get("VITE_GEMINI_API_KEY")
         or os.environ.get("VITE_API_KEY", "")
     )
+    
+    # Get RAG stats safely
+    rag_chunks = 0
+    rag_engine_type = "unknown"
+    rag_engine_info = {}
+    try:
+        rag_engine_type = type(_rag_engine).__name__
+        if hasattr(_rag_engine, 'get_stats'):
+            rag_engine_info = _rag_engine.get_stats()
+            rag_chunks = rag_engine_info.get('total_chunks', 0)
+        elif hasattr(_rag_engine, 'chunks'):
+            rag_chunks = len(_rag_engine.chunks)
+            rag_engine_info = {"total_chunks": rag_chunks, "method": "legacy"}
+    except Exception as e:
+        rag_chunks = 0
+        rag_engine_info = {"error": str(e)}
 
     return HealthResponse(
         status="healthy",
         graph_compiled=get_graph() is not None,
-        rag_chunks=len(_rag_engine.chunks),
+        rag_chunks=rag_chunks,
         knowledge_docs=len(KNOWLEDGE_BASE),
         llm_available={
             "internal_llama": bool(internal_key),
@@ -349,6 +367,8 @@ async def api_health():
             "template_fallback": True,
         },
         persistence=get_persistence_status(),
+        rag_engine_type=rag_engine_type,
+        rag_engine_info=rag_engine_info,
     )
 
 
@@ -390,6 +410,162 @@ async def api_dashboard_logs(request: DashboardLogBatchRequest):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to persist dashboard logs: {str(e)}")
+
+
+# ─── RAG Document Management Endpoints ──────────────────────
+
+class DocumentRequest(BaseModel):
+    source: str = Field(..., description="Document source/filename")
+    content: str = Field(..., description="Document content")
+
+
+class DocumentResponse(BaseModel):
+    source: str
+    content_preview: str
+
+
+@app.get("/api/rag/documents")
+async def rag_get_documents():
+    """Get list of documents currently indexed in RAG."""
+    try:
+        if not _rag_engine:
+            raise HTTPException(status_code=503, detail="RAG engine not initialized")
+        
+        stats = _rag_engine.get_stats()
+        documents = _rag_engine.documents if hasattr(_rag_engine, 'documents') else []
+        
+        return {
+            "status": "ok",
+            "total_documents": stats.get("total_documents", 0),
+            "total_chunks": stats.get("total_chunks", 0),
+            "documents": [
+                {
+                    "source": doc.get("source") or doc.get("title", "unknown"),
+                    "content_preview": doc.get("content", "")[:200] + "..."
+                }
+                for doc in documents[:10]  # Limit to first 10
+            ]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve documents: {str(e)}")
+
+
+@app.post("/api/rag/documents")
+async def rag_add_document(request: DocumentRequest):
+    """Add a new document to the RAG knowledge base."""
+    try:
+        from document_loader import add_document
+        
+        if not _rag_engine:
+            raise HTTPException(status_code=503, detail="RAG engine not initialized")
+        
+        # Save document to disk
+        document = {
+            "source": request.source,
+            "content": request.content
+        }
+        success = add_document(document)
+        
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to save document to disk")
+        
+        # Add to RAG engine if it supports it
+        if hasattr(_rag_engine, 'add_documents'):
+            _rag_engine.add_documents([document])
+        
+        return {
+            "status": "ok",
+            "message": f"Document '{request.source}' added successfully",
+            "document": {
+                "source": request.source,
+                "content_preview": request.content[:200] + "..."
+            }
+        }
+    except ImportError:
+        raise HTTPException(status_code=500, detail="Document loader not available")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to add document: {str(e)}")
+
+
+@app.post("/api/rag/reload")
+async def rag_reload_documents():
+    """Reload documents from /data directory and re-index."""
+    try:
+        from document_loader import load_all_documents
+        from vector_rag_engine import create_rag_engine
+        
+        if not _rag_engine:
+            raise HTTPException(status_code=503, detail="RAG engine not initialized")
+        
+        # Load fresh documents
+        data_dir = os.path.join(os.path.dirname(__file__), "data")
+        new_documents = load_all_documents(data_dir)
+        
+        if not new_documents:
+            raise HTTPException(status_code=400, detail="No documents found in /data directory")
+        
+        # Re-create engine with new documents
+        new_engine = create_rag_engine(new_documents)
+        
+        # Replace global engine reference
+        import langgraph_workflow
+        langgraph_workflow._rag_engine = new_engine
+        
+        return {
+            "status": "ok",
+            "message": f"Reloaded {len(new_documents)} documents",
+            "stats": new_engine.get_stats()
+        }
+    except ImportError as e:
+        raise HTTPException(status_code=500, detail=f"Import error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to reload documents: {str(e)}")
+
+
+@app.post("/api/rag/save-index")
+async def rag_save_index():
+    """Save the current RAG index to disk for persistence."""
+    try:
+        if not _rag_engine:
+            raise HTTPException(status_code=503, detail="RAG engine not initialized")
+        
+        if not hasattr(_rag_engine, 'save_index'):
+            raise HTTPException(status_code=400, detail="RAG engine does not support index persistence")
+        
+        # Save to default path
+        index_path = os.path.join(os.path.dirname(__file__), "models", "rag_index")
+        os.makedirs(os.path.dirname(index_path), exist_ok=True)
+        
+        success = _rag_engine.save_index(index_path)
+        
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to save index")
+        
+        return {
+            "status": "ok",
+            "message": "RAG index saved successfully",
+            "path": index_path
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save index: {str(e)}")
+
+
+@app.get("/api/rag/stats")
+async def rag_get_stats():
+    """Get detailed statistics about the RAG engine."""
+    try:
+        if not _rag_engine:
+            raise HTTPException(status_code=503, detail="RAG engine not initialized")
+        
+        stats = _rag_engine.get_stats()
+        
+        return {
+            "status": "ok",
+            "stats": stats,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get stats: {str(e)}")
 
 
 @app.exception_handler(Exception)

@@ -1,10 +1,11 @@
 # AI Visual Workflow
 
-A production-ready visualizer and backend for an agentic workflow. The UI shows the flow between UI, LangGraph (LG), LLM, RAG, Vector DB (VDB), MCP tools, and Output. The backend executes the real workflow with RAG retrieval, tool execution, and LLM synthesis. The system is fully autonomous (no human approval gates).
+A production-ready visualizer and backend for an agentic workflow. The UI shows the flow between UI, LangGraph (LG), LLM, RAG, Vector DB (VDB), MCP tools, and Output. The backend executes the real workflow with **real vector-based RAG retrieval**, tool execution, and LLM synthesis. The system is fully autonomous (no human approval gates).
 
 ## What This Project Does
 - Visualizes an agentic workflow in a live, animated UI.
 - Runs a real LangGraph workflow with routing: RAG-only, MCP-only, Hybrid, or Direct.
+- **NEW: Real RAG with vector embeddings** using Sentence Transformers + FAISS
 - Executes real tools for stocks, weather, currency, time, dictionary, web search, and more.
 - Uses intelligent LLM routing to choose the best model by task type, budget, and latency.
 - Supports optional Redis persistence for workflow checkpoints.
@@ -19,7 +20,12 @@ Frontend (React + Vite):
 Backend (Python + FastAPI + LangGraph):
 - Intake -> Planner -> (RAG and/or Tools) -> Synthesizer -> Output
 - Planner selects route: rag_only, mcp_only, hybrid, direct
-- RAG: TF-IDF retrieval over built-in knowledge base
+- **RAG: Vector embeddings with FAISS for semantic search** (NEW!)
+  - Sentence Transformers (all-MiniLM-L6-v2) for embeddings
+  - FAISS for fast similarity search (~15ms)
+  - Hybrid search: 70% vector + 30% keyword matching
+  - Query expansion for better recall
+  - Falls back to TF-IDF if dependencies unavailable
 - Tools: real API calls (Yahoo Finance, Open-Meteo, Wikipedia, etc.)
 - LLM: internal Llama 3.3 70B primary, Gemini fallback
 
@@ -41,7 +47,12 @@ pip install -r requirements.txt
 python langgraph_api.py
 ```
 
+**First run**: Downloads the embedding model (~90MB) and indexes documents (~4s)  
+**Subsequent runs**: Instant startup (model is cached)
+
 Default API URL: http://localhost:5001
+
+For more details on the RAG implementation, see [mcp-server/RAG_README.md](mcp-server/RAG_README.md)
 
 ### 3) MCP Server (optional)
 ```bash
@@ -90,14 +101,18 @@ AI-Visual-Workflow/
 │   ├── AnimatedFlow.tsx
 │   └── Diagram.tsx
 ├── services/
-│   └── ragService.ts          # Local RAG fallback only
+│   └── ragService.ts          # Browser-based RAG fallback
 ├── mcp-server/
 │   ├── langgraph_workflow.py  # Core workflow
 │   ├── langgraph_api.py       # REST API
+│   ├── vector_rag_engine.py   # Real RAG with embeddings (NEW!)
+│   ├── test_rag.py            # RAG test suite (NEW!)
+│   ├── RAG_README.md          # RAG documentation (NEW!)
 │   ├── index.js               # MCP server
 │   └── requirements.txt
 ├── images/
 │   └── architecture-diagram.png
+├── IMPLEMENTATION_SUMMARY.md   # RAG implementation details (NEW!)
 ├── index.html
 ├── index.tsx
 ├── constants.tsx
