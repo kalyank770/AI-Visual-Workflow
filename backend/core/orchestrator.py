@@ -724,11 +724,30 @@ def tool_calculator(expr: str) -> str | None:
         return None
 
 
+def _normalize_web_search_query(query: str) -> str:
+    lower = query.lower()
+    normalized = query.strip()
+
+    if _is_leadership_query(query):
+        if "current" not in lower and "latest" not in lower:
+            normalized = f"{normalized} current latest"
+        if any(term in lower for term in ("opentext", "otex", "open text")):
+            normalized = (
+                f"{normalized} site:opentext.com OR site:investors.opentext.com"
+            )
+    elif any(term in lower for term in ("current", "latest", "recent", "today", "now")):
+        if "latest" not in lower:
+            normalized = f"{normalized} latest"
+
+    return normalized
+
+
 def tool_web_search(query: str) -> str | None:
     """Search using DuckDuckGo Instant Answer API (free, no key)."""
+    normalized_query = _normalize_web_search_query(query)
     data = _http_get(
         f"https://api.duckduckgo.com/"
-        f"?q={query.replace(' ', '+')}&format=json&no_html=1&skip_disambig=1"
+        f"?q={normalized_query.replace(' ', '+')}&format=json&no_html=1&skip_disambig=1"
     )
     if not data:
         return None
@@ -767,7 +786,10 @@ def tool_web_search(query: str) -> str | None:
     
     # Fallback: Return acknowledgment that search was attempted
     # This ensures the tool is "called" even when DuckDuckGo has no instant answers
-    return f"Web search query received: '{query}'. For real-time results, please use a full-featured search engine."
+    return (
+        "Web search query received: "
+        f"'{normalized_query}'. For real-time results, please use a full-featured search engine."
+    )
 
 
 def tool_stock_analysis(query: str) -> str | None:
@@ -1245,15 +1267,30 @@ def _regex_run_tools(prompt: str) -> list[str]:
         lower,
     )
     # Check for time-sensitive keywords (highest priority — prefer web search)
+    is_leadership_query = _is_leadership_query(prompt)
     has_time_sensitive = bool(
         re.search(
             r"\b(current|latest|recent|new|live|today|now|recently|this\s+(?:week|month|year)|upcoming|\d{4})\b",
             lower,
         )
-    )
+    ) or is_leadership_query
 
     if has_time_sensitive:
-        return "mcp_only", "[regex] Time-sensitive query → external tools."
+        search_query = prompt
+        if is_leadership_query:
+            topic = _extract_entity(
+                prompt,
+                [
+                    r"(?:who is|who was)\s+(.+?)(?:\?|$)",
+                    r"(.+?)\s+(?:ceo|president|founder|chairman|cto|cfo)",
+                ],
+            )
+            if topic:
+                search_query = f"{topic} current CEO latest"
+        result = tool_web_search(search_query)
+        if result:
+            return [f"Tool [WebSearch]: {result}"]
+        return ["Tool [WebSearch]: Web search attempted but no results returned."]
     
     # Skip Wikipedia for time-sensitive queries; use web search instead
     if (any(w in lower for w in wiki_triggers) or leadership) and not has_time_sensitive:
@@ -1908,6 +1945,11 @@ You are an intelligent tool selector. Given a user's query, pick the CORRECT too
 - "wikipedia": Factual info about people, places, concepts, companies. Entity = topic name ONLY.
 - "web_search": General web search fallback. Entity = concise search query.
 
+=== LIVE DATA PRIORITY ===
+For leadership/executive queries (CEO, CFO, CTO, president, founder, board, management team),
+ALWAYS use "web_search" instead of "wikipedia" to avoid stale info.
+Example: "opentext ceo" -> tool="web_search", entity="OpenText current CEO latest".
+
 === CRITICAL RULES FOR ENTITY EXTRACTION ===
 1. TEMPORAL MODIFIERS ARE NOT PART OF ENTITY:
    - "weather TODAY in London" -> tool="weather", entity="London" (NOT "today London")
@@ -1989,24 +2031,36 @@ def _is_prediction_query(prompt: str) -> bool:
     return has_prediction_kw and has_stock_kw
 
 
+def _is_leadership_query(prompt: str) -> bool:
+    """Detect leadership/executive queries that require live sources."""
+    lower = prompt.lower()
+    return bool(re.search(
+        r"\b(ceo|chief\s+executive|cfo|cto|coo|president|founder|chairman|"
+        r"executive|leadership|management\s+team|board\s+of\s+directors)\b",
+        lower,
+    ))
+
+
 def _postprocess_llm_tools(tools: list[dict], prompt: str) -> list[dict]:
     """Deterministic corrections on LLM tool selections — fixes known LLM mistakes."""
     lower = prompt.lower()
     is_prediction = _is_prediction_query(prompt)
     
     # ─── Check for time-sensitive keywords (highest priority) ───
+    is_leadership_query = _is_leadership_query(prompt)
     has_time_sensitive = bool(
         re.search(
             r"\b(current|latest|recent|new|live|today|now|recently|this\s+(?:week|month|year)|upcoming|\d{4})\b",
             lower,
         )
-    )
+    ) or is_leadership_query
     
     original_tools = [t["tool"] for t in tools]
     _log(f"\n>>> POST-PROCESS START: prompt='{prompt}'")
     _log(f"    Original tools: {original_tools}")
     _log(f"    Has time-sensitive: {has_time_sensitive}")
     _log(f"    Is prediction: {is_prediction}")
+    _log(f"    Is leadership query: {is_leadership_query}")
     
     # If time-sensitive, prefer web_search over wikipedia (wikipedia is static/outdated)
     if has_time_sensitive:
@@ -2022,6 +2076,19 @@ def _postprocess_llm_tools(tools: list[dict], prompt: str) -> list[dict]:
         if not modified:
             _log(f"    No Wikipedia tools found to convert")
         _log(f"    Final tools after time-sensitive block: {[t['tool'] for t in tools]}")
+
+        # Leadership queries should always hit live web search
+        if is_leadership_query and not any(t["tool"] == "web_search" for t in tools):
+            topic = _extract_entity(
+                prompt,
+                [
+                    r"(?:who is|who was)\s+(.+?)(?:\?|$)",
+                    r"(.+?)\s+(?:ceo|president|founder|chairman|cto|cfo)",
+                ],
+            )
+            search_entity = topic or prompt
+            tools.append({"tool": "web_search", "entity": f"{search_entity} current CEO latest"})
+            _log(f"    POST-PROCESS: added web_search('{search_entity} current CEO latest') for leadership query")
     
     # Aggressive fix: convert stock_price to stock_analysis for ANY query with prediction keywords
     for t in tools:
