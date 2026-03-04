@@ -708,20 +708,57 @@ def tool_dictionary(word: str) -> str | None:
 
 def tool_calculator(expr: str) -> str | None:
     """Safely evaluate a math expression (no code injection)."""
-    cleaned = re.sub(r"[^0-9+\-*/().%^ ]", "", expr)
-    cleaned = cleaned.replace("^", "**")
-    if not cleaned.strip():
-        return None
-    try:
-        # Restrict to safe builtins only
-        result = eval(
-            cleaned,
-            {"__builtins__": {}},
-            {"abs": abs, "round": round, "min": min, "max": max},
+    expressions = [e.strip() for e in re.split(r"[;|]", expr) if e.strip()]
+    results = []
+    for item in expressions:
+        cleaned = re.sub(r"[^0-9+\-*/().%^ ]", "", item)
+        cleaned = cleaned.replace("^", "**")
+        if not cleaned.strip():
+            continue
+        try:
+            # Restrict to safe builtins only
+            result = eval(
+                cleaned,
+                {"__builtins__": {}},
+                {"abs": abs, "round": round, "min": min, "max": max},
+            )
+            results.append(f"{item} = {result}")
+        except Exception:
+            continue
+    return " | ".join(results) if results else None
+
+
+def tool_unit_converter(query: str) -> str | None:
+    """Convert between common units of length."""
+    unit_map = {
+        "mm": 0.001, "millimeter": 0.001, "millimeters": 0.001,
+        "cm": 0.01, "centimeter": 0.01, "centimeters": 0.01,
+        "m": 1.0, "meter": 1.0, "meters": 1.0,
+        "km": 1000.0, "kilometer": 1000.0, "kilometers": 1000.0,
+        "in": 0.0254, "inch": 0.0254, "inches": 0.0254,
+        "ft": 0.3048, "foot": 0.3048, "feet": 0.3048,
+        "yd": 0.9144, "yard": 0.9144, "yards": 0.9144,
+        "mi": 1609.344, "mile": 1609.344, "miles": 1609.344,
+    }
+    queries = [q.strip() for q in re.split(r"[;|]", query) if q.strip()]
+    results = []
+    for item in queries:
+        match = re.search(
+            r"(?P<amount>[-+]?\d*\.?\d+)\s*(?P<from>[a-zA-Z]+)\s*(?:to|in|into)\s*(?P<to>[a-zA-Z]+)",
+            item,
+            re.IGNORECASE,
         )
-        return f"{expr} = {result}"
-    except Exception:
-        return None
+        if not match:
+            continue
+        amount = float(match.group("amount"))
+        from_unit = match.group("from").lower()
+        to_unit = match.group("to").lower()
+        if from_unit not in unit_map or to_unit not in unit_map:
+            continue
+        meters = amount * unit_map[from_unit]
+        converted = meters / unit_map[to_unit]
+        results.append(f"{amount} {from_unit} = {converted:g} {to_unit}")
+    return " | ".join(results) if results else None
 
 
 def _normalize_web_search_query(query: str) -> str:
@@ -740,6 +777,68 @@ def _normalize_web_search_query(query: str) -> str:
             normalized = f"{normalized} latest"
 
     return normalized
+
+
+def _http_get_text(url: str) -> str | None:
+    """Safe HTTP GET returning raw text or None on failure."""
+    try:
+        h = {"User-Agent": "AIVisualWorkflow/2.0 (educational project; contact@example.com)"}
+        resp = httpx.get(url, headers=h, timeout=HTTP_TIMEOUT, follow_redirects=True)
+        if resp.status_code == 200 and resp.text:
+            return resp.text
+    except Exception as e:
+        _log(f"HTTP GET text failed ({url[:80]}): {e}")
+    return None
+
+
+def _jina_proxy_url(url: str) -> str:
+    clean = url.replace("https://", "").replace("http://", "")
+    return f"https://r.jina.ai/http://{clean}"
+
+
+def _extract_ceo_from_text(text: str) -> str | None:
+    patterns = [
+        (r"([A-Z][A-Za-z .'-]{2,60})\s+Interim\s+Chief\s+Executive\s+Officer", "Interim Chief Executive Officer"),
+        (r"([A-Z][A-Za-z .'-]{2,60})\s+Chief\s+Executive\s+Officer", "Chief Executive Officer"),
+        (r"Chief\s+Executive\s+Officer\s*[:\-]\s*([A-Z][A-Za-z .'-]{2,60})", "Chief Executive Officer"),
+        (r"CEO\s*[:\-]\s*([A-Z][A-Za-z .'-]{2,60})", "Chief Executive Officer"),
+    ]
+    for pattern, title in patterns:
+        match = re.search(pattern, text)
+        if match:
+            name = match.group(1).strip(" ,.-")
+            if name:
+                return f"{name} ({title})"
+    return None
+
+
+def _leadership_live_fallback(query: str) -> str | None:
+    """Attempt to fetch leadership info from official or trusted pages."""
+    lower = query.lower()
+    urls: list[str] = []
+
+    if any(term in lower for term in ("opentext", "otex", "open text")):
+        urls = [
+            "https://www.opentext.com/about/leadership",
+            "https://investors.opentext.com/corporate-governance/management",
+            "https://www.opentext.com/about/leadership/executive-team",
+        ]
+    else:
+        ticker = _resolve_ticker(query)
+        if ticker:
+            urls = [
+                f"https://www.reuters.com/markets/companies/{ticker}.O",
+                f"https://www.reuters.com/markets/companies/{ticker}.TO",
+            ]
+
+    for url in urls:
+        text = _http_get_text(url) or _http_get_text(_jina_proxy_url(url))
+        if not text:
+            continue
+        ceo_info = _extract_ceo_from_text(text)
+        if ceo_info:
+            return f"Leadership (live): {ceo_info} (source: {url})"
+    return None
 
 
 def tool_web_search(query: str) -> str | None:
@@ -761,6 +860,10 @@ def tool_web_search(query: str) -> str | None:
     if abstract:
         if len(abstract) > 600:
             abstract = abstract[:600].rsplit(". ", 1)[0] + "."
+        if _is_leadership_query(normalized_query) and source.lower() == "wikipedia":
+            fallback = _leadership_live_fallback(normalized_query)
+            if fallback:
+                return fallback
         return f"[{source}] {abstract}"
     # Try related topics
     topics = data.get("RelatedTopics", [])
@@ -784,6 +887,12 @@ def tool_web_search(query: str) -> str | None:
         if facts:
             return "[DuckDuckGo] " + " | ".join(facts)
     
+    # If leadership query, attempt a live fallback source before returning generic message
+    if _is_leadership_query(normalized_query):
+        fallback = _leadership_live_fallback(normalized_query)
+        if fallback:
+            return fallback
+
     # Fallback: Return acknowledgment that search was attempted
     # This ensures the tool is "called" even when DuckDuckGo has no instant answers
     return (
@@ -848,6 +957,10 @@ def tool_stock_analysis(query: str) -> str | None:
 
 def tool_world_clock(location: str) -> str:
     """Get current time for a timezone or city."""
+    if ";" in location or "|" in location:
+        locations = [l.strip() for l in re.split(r"[;|]", location) if l.strip()]
+        outputs = [tool_world_clock(loc) for loc in locations]
+        return " | ".join(outputs)
     offset_map = {
         "new york": -5, "nyc": -5, "est": -5, "eastern": -5,
         "chicago": -6, "cst": -6, "central": -6,
@@ -1335,6 +1448,14 @@ def _regex_run_tools(prompt: str) -> list[str]:
                     results.append(wiki_result)
                     _log(f"REGEX: Wikipedia fallback provided company info for '{topic}'")
 
+    # ── Unit Conversion Detection ──
+    if _is_unit_conversion_query(prompt):
+        entity = _extract_unit_conversion_entity(prompt)
+        if entity:
+            result = tool_unit_converter(entity)
+            if result:
+                results.append(f"Tool [UnitConverter]: {result}")
+
     # ── Time / Timezone Detection ──
     is_time_query = any(w in lower for w in ("time in", "time at", "what time", "timezone", "clock")) or bool(re.search(r"\d+\s*(?:am|pm)\s+\w+\s+to\s+\w+", lower))
     if is_time_query and not leadership:
@@ -1455,7 +1576,31 @@ def _regex_run_tools(prompt: str) -> list[str]:
             else:
                 _log(f"REGEX: Blocked Wikipedia fallback for time-sensitive query: '{prompt}'")
 
-    return results
+    # ─── MERGE DUPLICATE TOOLS ───
+    # Consolidate results by tool type and combine entities with " | "
+    merged_results: dict[str, list[str]] = {}
+    for r in results:
+        # Extract tool name and content from "Tool [ToolName]: content"
+        match = re.match(r"Tool \[(\w+)\]:\s*(.+)", r)
+        if match:
+            tool_name = match.group(1)
+            content = match.group(2)
+            if tool_name not in merged_results:
+                merged_results[tool_name] = []
+            merged_results[tool_name].append(content)
+    
+    # Rebuild results with merged tools
+    final_results: list[str] = []
+    for tool_name, contents in merged_results.items():
+        if len(contents) == 1:
+            final_results.append(f"Tool [{tool_name}]: {contents[0]}")
+        else:
+            # Merge multiple results for same tool with " | " separator
+            merged_content = " | ".join(contents)
+            final_results.append(f"Tool [{tool_name}]: {merged_content}")
+            _log(f"REGEX: Merged {len(contents)} {tool_name} results")
+
+    return final_results if final_results else results
 
 
 def _extract_entity(prompt: str, patterns: list[str]) -> str | None:
@@ -1942,6 +2087,7 @@ You are an intelligent tool selector. Given a user's query, pick the CORRECT too
 - "world_clock": Current time in a timezone/city. Entity = city or IANA timezone (default "UTC").
 - "dictionary": Word definition. Entity = single word to define.
 - "calculator": Math expression. Entity = mathematical expression (e.g. "2+2", "sqrt(144)").
+- "unit_converter": Unit conversion (length). Entity = conversion phrase (e.g. "1km to m", "12 in to cm").
 - "wikipedia": Factual info about people, places, concepts, companies. Entity = topic name ONLY.
 - "web_search": General web search fallback. Entity = concise search query.
 
@@ -2031,6 +2177,25 @@ def _is_prediction_query(prompt: str) -> bool:
     return has_prediction_kw and has_stock_kw
 
 
+def _is_unit_conversion_query(prompt: str) -> bool:
+    lower = prompt.lower()
+    return bool(re.search(
+        r"\b\d*\.?\d+\s*(mm|cm|m|km|in|inch|inches|ft|foot|feet|yd|yard|yards|mi|mile|miles)\s*(to|in|into)\s*"
+        r"(mm|cm|m|km|in|inch|inches|ft|foot|feet|yd|yard|yards|mi|mile|miles)\b",
+        lower,
+    ))
+
+
+def _extract_unit_conversion_entity(prompt: str) -> str | None:
+    match = re.search(
+        r"(\d*\.?\d+\s*(?:mm|cm|m|km|in|inch|inches|ft|foot|feet|yd|yard|yards|mi|mile|miles)\s*(?:to|in|into)\s*"
+        r"(?:mm|cm|m|km|in|inch|inches|ft|foot|feet|yd|yard|yards|mi|mile|miles))",
+        prompt,
+        re.IGNORECASE,
+    )
+    return match.group(1).strip() if match else None
+
+
 def _is_leadership_query(prompt: str) -> bool:
     """Detect leadership/executive queries that require live sources."""
     lower = prompt.lower()
@@ -2045,6 +2210,7 @@ def _postprocess_llm_tools(tools: list[dict], prompt: str) -> list[dict]:
     """Deterministic corrections on LLM tool selections — fixes known LLM mistakes."""
     lower = prompt.lower()
     is_prediction = _is_prediction_query(prompt)
+    is_unit_conversion = _is_unit_conversion_query(prompt)
     
     # ─── Check for time-sensitive keywords (highest priority) ───
     is_leadership_query = _is_leadership_query(prompt)
@@ -2060,6 +2226,7 @@ def _postprocess_llm_tools(tools: list[dict], prompt: str) -> list[dict]:
     _log(f"    Original tools: {original_tools}")
     _log(f"    Has time-sensitive: {has_time_sensitive}")
     _log(f"    Is prediction: {is_prediction}")
+    _log(f"    Is unit conversion: {is_unit_conversion}")
     _log(f"    Is leadership query: {is_leadership_query}")
     
     # If time-sensitive, prefer web_search over wikipedia (wikipedia is static/outdated)
@@ -2095,6 +2262,16 @@ def _postprocess_llm_tools(tools: list[dict], prompt: str) -> list[dict]:
         if t["tool"] == "stock_price" and is_prediction:
             t["tool"] = "stock_analysis"
             _log(f"    POST-PROCESS: forced stock_price → stock_analysis (prediction query)")
+
+    # If unit conversion detected, prefer unit_converter over calculator
+    if is_unit_conversion:
+        converted = False
+        for t in tools:
+            if t["tool"] == "calculator":
+                t["tool"] = "unit_converter"
+                converted = True
+        if converted:
+            _log("    POST-PROCESS: calculator → unit_converter (unit conversion query)")
     
     # For prediction queries, ENFORCE stock_analysis + wikipedia together
     # BUT: Skip wikipedia addition if query is time-sensitive (already converted to web_search above)
@@ -2155,8 +2332,35 @@ def _postprocess_llm_tools(tools: list[dict], prompt: str) -> list[dict]:
             any(w in t["entity"].lower() for w in ("stock", "forecast", "prediction", "analysis"))
         )]
     
+    tools = _merge_tool_calls(tools)
     _log(f"<<< POST-PROCESS END: Final tools = {[t['tool'] for t in tools]}\n")
     return tools
+
+
+def _merge_tool_calls(tools: list[dict]) -> list[dict]:
+    """Merge duplicate tools into a single call per tool."""
+    merged: list[dict] = []
+    tool_index: dict[str, int] = {}
+
+    for t in tools:
+        tool = t.get("tool")
+        entity = (t.get("entity") or "").strip()
+        if not tool:
+            continue
+
+        if tool not in tool_index:
+            merged.append({"tool": tool, "entity": entity})
+            tool_index[tool] = len(merged) - 1
+            continue
+
+        idx = tool_index[tool]
+        existing = merged[idx]
+        existing_entities = [e.strip() for e in re.split(r"[;|]", existing["entity"]) if e.strip()]
+        if entity and entity not in existing_entities:
+            existing_entities.append(entity)
+        existing["entity"] = " ; ".join(existing_entities)
+
+    return merged
 
 
 def _llm_select_tools(prompt: str) -> list[dict] | None:
@@ -2187,6 +2391,7 @@ def _llm_select_tools(prompt: str) -> list[dict] | None:
         valid_tools = {
             "stock_price", "stock_analysis", "weather", "wikipedia",
             "dictionary", "calculator", "world_clock", "web_search", "currency",
+            "unit_converter",
         }
         
         if isinstance(data, list) and len(data) > 0:
@@ -2305,6 +2510,35 @@ def _execute_tool_call(tool_name: str, entity: str, original_prompt: str = "") -
         return None
     entity = entity.strip()
 
+    if ";" in entity or "|" in entity:
+        parts = [p.strip() for p in re.split(r"[;|]", entity) if p.strip()]
+        label_map = {
+            "stock_price": "StockPrice",
+            "stock_analysis": "StockAnalysis",
+            "weather": "Weather",
+            "wikipedia": "Wikipedia",
+            "dictionary": "Dictionary",
+            "calculator": "Calculator",
+            "unit_converter": "UnitConverter",
+            "world_clock": "WorldClock",
+            "currency": "Currency",
+            "web_search": "WebSearch",
+        }
+        label = label_map.get(tool_name, tool_name)
+        results: list[str] = []
+        for part in parts:
+            result = _execute_tool_call(tool_name, part, original_prompt=original_prompt)
+            if not result:
+                continue
+            prefix = f"Tool [{label}]: "
+            if result.startswith(prefix):
+                results.append(result[len(prefix):])
+            else:
+                results.append(result)
+        if results:
+            return f"Tool [{label}]: " + " | ".join(results)
+        return None
+
     # Clean stock-related filler words from stock tool entities
     if tool_name in ("stock_price", "stock_analysis"):
         # Phase 1: Remove time-frame phrases (with or without spaces between number and unit)
@@ -2365,6 +2599,9 @@ def _execute_tool_call(tool_name: str, entity: str, original_prompt: str = "") -
     elif tool_name == "calculator":
         r = tool_calculator(entity)
         return f"Tool [Calculator]: {r}" if r else None
+    elif tool_name == "unit_converter":
+        r = tool_unit_converter(entity)
+        return f"Tool [UnitConverter]: {r}" if r else None
     elif tool_name == "world_clock":
         r = tool_world_clock(entity)
         return f"Tool [WorldClock]: {r}"
