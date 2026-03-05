@@ -4,11 +4,13 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "prestart": ".venv\\Scripts\\python.exe -m backend.port_cleanup --ports 5001 5002",
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "backend": ".venv\\Scripts\\python.exe backend\\main.py",
-    "start": "concurrently --kill-others --names \"FRONTEND,BACKEND\" -c \"bgBlue.bold,bgMagenta.bold\" \"npm run dev\" \"npm run backend\""
+    "backend": ".venv\\Scripts\\python.exe -m backend.main",
+    "mcp": ".venv\\Scripts\\python.exe -m backend.mcp_server",
+    "start": "concurrently --kill-others --names \"FRONTEND,BACKEND,MCP\" -c \"bgBlue.bold,bgMagenta.bold,bgGreen.bold\" \"npm run dev\" \"npm run backend\" \"npm run mcp\""
   },
   "dependencies": {
     "@google/generative-ai": "^0.21.0",
