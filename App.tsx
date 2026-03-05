@@ -65,6 +65,7 @@ const App: React.FC = () => {
   const [highlightedLogId, setHighlightedLogId] = useState<string | null>(null);
   const [activePath, setActivePath] = useState<WorkflowStep[]>([]);
   const [activeModelName, setActiveModelName] = useState<string>("Llama 3.3 70B");
+  const [isUsingRealLLM, setIsUsingRealLLM] = useState<boolean>(true);
   const [pathOutputView, setPathOutputView] = useState<{ prompt: string; output: string } | null>(null);
   const [showFinalOutput, setShowFinalOutput] = useState(false);
   const [isDarkMode, setIsDarkMode] = useState(true);
@@ -484,6 +485,7 @@ const App: React.FC = () => {
     setPathHistory([]);
     setActivePath([]);
     setActiveModelName("Llama 3.3 70B");
+    setIsUsingRealLLM(true);
     setShowFinalOutput(false);
     toolDataRef.current = [];
     ragDataRef.current = null;
@@ -846,6 +848,7 @@ const App: React.FC = () => {
     setIsSimulating(true);
     setIsPaused(false);
     setActiveModelName("llama-3.3-70b");
+    setIsUsingRealLLM(true);
     setShowFinalOutput(false);
     setPathHistory(prev => [
       {
@@ -958,6 +961,7 @@ const App: React.FC = () => {
       }
 
       setActiveModelName(result.active_model || 'Backend API');
+      setIsUsingRealLLM(true);
       setIsSimulating(false);
       setPrompt('');
       return;
@@ -1018,6 +1022,7 @@ const App: React.FC = () => {
           setShowFinalOutput(true);
         }
         setActiveModelName('Local Calculator');
+        setIsUsingRealLLM(false);
         setIsSimulating(false);
         setPrompt('');
         return;
@@ -1034,6 +1039,7 @@ const App: React.FC = () => {
       const staticInsight = `${component.description}\n\nStatus: ${state.currentStep || 'Idle'}\nTask: ${prompt || 'None'}`;
       setNodeInsight(staticInsight);
       setActiveModelName('Backend (Static)');
+      setIsUsingRealLLM(false);
     }
     setLoadingInsight(false);
   };
@@ -1059,7 +1065,7 @@ const App: React.FC = () => {
               <div className="flex items-center gap-2 mt-1">
                 <div className="flex items-center gap-1.5 px-2 py-0.5 bg-emerald-500/10 border border-emerald-500/20 rounded-full animate-pulse">
                   <div className="w-1 h-1 bg-emerald-500 rounded-full" />
-                  <span className="text-[9px] font-bold text-emerald-400 uppercase">{isPaused ? 'Paused' : 'Synchronizing'}</span>
+                  <span className="text-[9px] font-bold text-emerald-400 uppercase">{isPaused ? 'Paused' : 'RUNNING'}</span>
                 </div>
               </div>
             )}
@@ -1366,7 +1372,7 @@ const App: React.FC = () => {
               <div className="flex items-center gap-1.5">
                 <div className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
                 <span className="text-[8px] font-bold uppercase tracking-tighter text-emerald-400">
-                  LLM: Backend
+                  LLM: {isUsingRealLLM ? 'Real' : 'Fallback'}
                 </span>
               </div>
               <div className="flex items-center gap-1.5">

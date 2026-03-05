@@ -183,9 +183,9 @@ User Query: "What is RAG in AI?"
 |------|-----|----------|
 | 📈 **Stocks** | Yahoo Finance | Real-time quotes, company info |
 | 🌤️ **Weather** | Open-Meteo | Current & forecast, any location |
-| 💱 **Currency** | ExchangeRate-API | Live conversion rates |
+| 💱 **Currency** | Exchange Rate API | Live conversion rates |
 | 🌐 **Web Search** | DuckDuckGo | General knowledge |
-| ⏰ **Time** | WorldTimeAPI | Time zones worldwide |
+| ⏰ **Time** | Built-in offsets | Time zones worldwide |
 | 📚 **Wikipedia** | Wikipedia API | Encyclopedic knowledge |
 
 **Model Context Protocol (MCP)**

@@ -111,13 +111,13 @@ This document provides a comprehensive overview of the AI Visual Workflow system
 │  └────────────────┘  └────────────────┘  └────────────────┘   │
 │                                                                  │
 │  ┌────────────────┐  ┌────────────────┐  ┌────────────────┐   │
-│  │ Yahoo Finance  │  │ wttr.in        │  │ Wikipedia API  │   │
+│  │ Yahoo Finance  │  │ Open-Meteo     │  │ Wikipedia API  │   │
 │  │ Stock Data     │  │ Weather        │  │ Knowledge      │   │
 │  └────────────────┘  └────────────────┘  └────────────────┘   │
 │                                                                  │
 │  ┌────────────────┐  ┌────────────────┐  ┌────────────────┐   │
 │  │ DuckDuckGo     │  │ Dictionary API │  │ Exchange Rate  │   │
-│  │ Web Search     │  │ Definitions    │  │ Currency       │   │
+│  │ Web Search     │  │ Definitions    │  │ API Currency   │   │
 │  └────────────────┘  └────────────────┘  └────────────────┘   │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -288,7 +288,7 @@ START → Intake → Planner → (RAG / Tools / Direct) → Synthesizer → END
 ---
 
 ### 6. MCP Tools Engine
-**Location**: [backend/core/orchestrator.py](backend/core/orchestrator.py#L500-L1840)
+**Location**: [backend/core/orchestrator.py](backend/core/orchestrator.py) (routing) + [backend/tools/mcp_tools.py](backend/tools/mcp_tools.py) (implementations) + [backend/mcp_server.py](backend/mcp_server.py) (HTTP/SSE)
 
 **Purpose**: Execute external API calls for real-time data
 
@@ -298,14 +298,14 @@ START → Intake → Planner → (RAG / Tools / Direct) → Synthesizer → END
 |------|-----|---------|----------|
 | Stock Price | Yahoo Finance | 300ms | "AAPL stock price" |
 | Stock Analysis | Yahoo Finance | 400ms | "AAPL forecast" |
-| Weather | wttr.in | 250ms | "weather in London" |
+| Weather | Open-Meteo | 250ms | "weather in London" |
 | Wikipedia | Wikimedia REST | 200ms | "What is RAG?" |
 | Web Search | DuckDuckGo | 500ms | "OpenText CEO" |
 | Dictionary | Free Dictionary | 180ms | "define ephemeral" |
 | Calculator | Sandboxed eval | 5ms | "45 * 23" |
 | Unit Converter | Built-in | 2ms | "100 km to miles" |
-| World Clock | Timezone lookup | 1ms | "time in Tokyo" |
-| Currency | exchangerate.host | 150ms | "USD to EUR" |
+| World Clock | Built-in offsets | 1ms | "time in Tokyo" |
+| Currency | Exchange Rate API | 150ms | "USD to EUR" |
 
 **Key Features**:
 - **Zero Configuration**: All APIs are free, no keys required
@@ -313,6 +313,7 @@ START → Intake → Planner → (RAG / Tools / Direct) → Synthesizer → END
 - **Multi-Entity**: "AAPL; MSFT; GOOGL" → parallel execution
 - **Guard Rails**: Wikipedia blocked for time-sensitive queries
 - **Deduplication**: Merges duplicate tool calls
+- **MCP Server**: Optional HTTP/SSE interface for external MCP clients
 
 **Related Docs**: [MCP_TOOLS.md](MCP_TOOLS.md)
 
@@ -556,11 +557,11 @@ START → Intake → Planner → (RAG / Tools / Direct) → Synthesizer → END
 | Service | API | Rate Limit | Purpose |
 |---------|-----|------------|---------|
 | **Yahoo Finance** | chart API | ~2000 req/hr | Stock prices & trends |
-| **wttr.in** | JSON API | Unlimited | Weather data |
+| **Open-Meteo** | REST API | Unlimited | Weather data |
 | **Wikipedia** | REST v1 | 5000 req/hr | Article summaries |
 | **DuckDuckGo** | Instant Answer | Unlimited | Web search |
 | **Free Dictionary** | dictionaryapi.dev | Unlimited | Word definitions |
-| **Exchange Rate** | exchangerate.host | 1500 req/month | Currency rates |
+| **Exchange Rate API** | REST API | Varies | Currency rates |
 
 ---
 

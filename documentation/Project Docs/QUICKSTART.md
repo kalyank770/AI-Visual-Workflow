@@ -41,6 +41,12 @@ cd backend
 python main.py
 ```
 
+Optional - MCP Server (for external MCP clients):
+```bash
+cd backend
+python mcp_server.py --port 5002
+```
+
 **Option B: Run together**
 ```bash
 npm run start
@@ -62,6 +68,11 @@ Or check the health endpoint:
 
 ```bash
 curl http://localhost:5001/api/health
+```
+
+MCP server tool discovery:
+```bash
+curl http://localhost:5002/mcp/tools
 ```
 
 **Response includes:**

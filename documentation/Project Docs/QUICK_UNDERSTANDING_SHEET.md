@@ -72,7 +72,7 @@
 **Answer**: "RAG grounds responses in real retrieved documents. Tool results are real API data. We cite sources so users can verify. Low-confidence answers can be rejected (future enhancement)."
 
 ### "How long to add a new tool?"
-**Answer**: "About 30 minutes. Define function in backend/tools/, add schema, register in orchestrator. LangGraph automatically discovers it. MCP protocol makes it plug-and-play."
+**Answer**: "About 30 minutes. Define the function in backend/tools/mcp_tools.py, add the schema in backend/tools/mcp_registry.py, and wire any regex routing in the orchestrator. MCP server exposure is automatic once registered."
 
 ### "What's the bottleneck?"
 **Answer**: "LLM inference at 1-3 seconds. RAG is only 15ms. External APIs 200-500ms. We can cache common LLM responses or use faster models for simple queries."

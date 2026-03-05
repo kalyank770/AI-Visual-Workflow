@@ -270,8 +270,9 @@ AI Visual Workflow is a **production-grade agentic AI system** that visualizes a
   - Type-safe parameter passing
   - Extensible architecture
 - **How**: 
-  - Defined in backend/tools/
-  - Real API integrations for stocks, weather, currency, etc.
+  - Tool schemas in backend/tools/mcp_registry.py
+  - Implementations in backend/tools/mcp_tools.py
+  - Optional MCP server in backend/mcp_server.py (HTTP/SSE)
 
 #### **5.2 HTTPX 0.27+**
 - **What**: Modern HTTP client for Python
@@ -288,10 +289,10 @@ AI Visual Workflow is a **production-grade agentic AI system** that visualizes a
 #### **5.3 External APIs (Free, No Auth)**
 - **Yahoo Finance**: Stock prices, company info
 - **Open-Meteo**: Weather data
-- **ExchangeRate-API**: Currency conversion
+- **Exchange Rate API**: Currency conversion
 - **Wikipedia API**: General knowledge
-- **WorldTimeAPI**: Time zones
 - **DuckDuckGo**: Web search
+- **World Clock**: Built-in offset map (no API)
 
 ---
 

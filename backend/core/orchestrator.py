@@ -513,6 +513,12 @@ def run_tools(prompt: str) -> list[str]:
     #  PHASE 1: LLM-BASED TOOL SELECTION (PRIMARY METHOD)
     # ════════════════════════════════════════════════════════════════
     llm_tools = _llm_select_tools(prompt)
+    # Deterministic guard: ensure calculator is present for math expressions
+    if llm_tools:
+        math_expr = _extract_math_expression(prompt) if _is_math_expression_query(prompt) else None
+        if math_expr and not any(t.get("tool") == "calculator" for t in llm_tools):
+            llm_tools.append({"tool": "calculator", "entity": math_expr})
+            _log(f"  POST-GUARD: added calculator('{math_expr}') to LLM tool list")
     
     if llm_tools:
         _log(f"\n✓ LLM tool selection SUCCEEDED")
@@ -1560,6 +1566,34 @@ def _extract_unit_conversion_entity(prompt: str) -> str | None:
     return match.group(1).strip() if match else None
 
 
+def _is_math_expression_query(prompt: str) -> bool:
+    """Detect if prompt contains a mathematical expression (with or without other text)."""
+    # Pure math: only digits, operators, parentheses
+    if bool(re.match(r"^[\d\s+\-*/().^sqrtabs]+$", prompt.replace("sqrt", "").replace("abs", ""))):
+        return True
+    # Embedded math: contains digit-operator-digit pattern
+    if bool(re.search(r"\d+\s*[*/+\-]\s*\d+", prompt)):
+        return True
+    return False
+
+
+def _extract_math_expression(prompt: str) -> str | None:
+    """Extract the first mathematical expression found in the prompt."""
+    # Look for complete math expression patterns: number operator number, with potential chains
+    # This regex tries to match: 123*45+67 or 4896*89+56, etc.
+    match = re.search(r"(\d+(?:\.\d+)?(?:\s*[+\-*/]\s*\d+(?:\.\d+)?)+)", prompt)
+    if match:
+        expr = match.group(1).replace(" ", "")
+        return expr
+    
+    # Fallback: simple two-number expression
+    match = re.search(r"(\d+(?:\.\d+)?)\s*([+\-*/])\s*(\d+(?:\.\d+)?)", prompt)
+    if match:
+        return f"{match.group(1)}{match.group(2)}{match.group(3)}"
+    
+    return None
+
+
 def _postprocess_llm_tools(tools: list[dict], prompt: str) -> list[dict]:
     """Deterministic corrections on LLM tool selections — fixes known LLM mistakes."""
     lower = prompt.lower()
@@ -1626,6 +1660,15 @@ def _postprocess_llm_tools(tools: list[dict], prompt: str) -> list[dict]:
                 converted = True
         if converted:
             _log("    POST-PROCESS: calculator → unit_converter (unit conversion query)")
+    
+    # CHECK FOR MATH EXPRESSIONS: If prompt contains math, ensure calculator is included
+    # This handles compound queries like "opentext ceo, 4896*89+56, weather in city"
+    math_expr = _extract_math_expression(prompt) if _is_math_expression_query(prompt) else None
+    if math_expr:
+        has_calculator = any(t["tool"] == "calculator" for t in tools)
+        if not has_calculator:
+            tools.append({"tool": "calculator", "entity": math_expr})
+            _log(f"    POST-PROCESS: added calculator('{math_expr}') for math expression in query")
     
     # For prediction queries, ENFORCE stock_analysis + wikipedia together
     # BUT: Skip wikipedia addition if query is time-sensitive (already converted to web_search above)

@@ -37,27 +37,32 @@ This document explains how Model Context Protocol (MCP) tools are configured, re
 1. TOOL REGISTRY
    ├─ Stock Price (Yahoo Finance)
    ├─ Stock Analysis (trend data, forecasts)
-   ├─ Weather (wttr.in)
+    ├─ Weather (Open-Meteo)
    ├─ Wikipedia (REST API)
    ├─ Web Search (DuckDuckGo Instant Answers)
    ├─ Dictionary (Free Dictionary API)
    ├─ Calculator (safe eval)
    ├─ Unit Converter (length conversions)
-   ├─ World Clock (timezone lookup)
-   └─ Currency Converter (exchangerate.host)
+    ├─ World Clock (built-in offset map)
+    └─ Currency Converter (Exchange Rate API + fallback)
 
-2. PATTERN MATCHING
+2. MCP SERVER (HTTP/SSE)
+    ├─ /mcp/tools (tool discovery)
+    ├─ /mcp (JSON-RPC: tools/list, tools/call)
+    └─ /mcp/sse (stream tool activity)
+
+3. PATTERN MATCHING
    ├─ Regex-based entity extraction
    ├─ Multi-pattern support per tool
    └─ Priority ordering (stock > weather > wiki)
 
-3. TOOL EXECUTION
+4. TOOL EXECUTION
    ├─ Parallel execution for multi-entity queries
    ├─ Deduplication (merge results)
    ├─ Error handling & retries
    └─ Guard rails (Wikipedia time-sensitive check)
 
-4. RESULT FORMATTING
+5. RESULT FORMATTING
    ├─ Standardized output: "Tool [Name]: data..."
    ├─ Merge duplicate tool calls
    └─ Pass to synthesizer for LLM integration
@@ -65,16 +70,51 @@ This document explains how Model Context Protocol (MCP) tools are configured, re
 
 ### File Locations
 
-| Component | File | Lines |
+| Component | File | Notes |
 |-----------|------|-------|
-| **Tool Implementations** | [orchestrator.py](backend/core/orchestrator.py#L500-L1400) | 500-1400 |
-| **Tool Execution Engine** | [orchestrator.py](backend/core/orchestrator.py#L1400-L1840) | 1400-1840 |
-| **Pattern Matching** | [orchestrator.py](backend/core/orchestrator.py#L1400-L1600) | 1400-1600 |
-| **Tool Node** | [orchestrator.py](backend/core/orchestrator.py#L2895-L2921) | 2895-2921 |
+| **MCP Server (HTTP/SSE)** | [backend/mcp_server.py](backend/mcp_server.py) | /mcp/tools, /mcp JSON-RPC, /mcp/sse |
+| **Tool Registry** | [backend/tools/mcp_registry.py](backend/tools/mcp_registry.py) | JSON schemas + dispatch |
+| **Tool Implementations** | [backend/tools/mcp_tools.py](backend/tools/mcp_tools.py) | API calls + formatting |
+| **Tool Execution Helper** | [backend/tools/mcp_tools.py](backend/tools/mcp_tools.py) | execute_tool_call() + guard rails |
+| **Pattern Matching** | [backend/core/orchestrator.py](backend/core/orchestrator.py) | run_tools() regex routing |
+| **Tool Node** | [backend/core/orchestrator.py](backend/core/orchestrator.py) | LangGraph node |
+
+---
+
+## MCP Server (HTTP/SSE)
+
+The MCP server exposes tool discovery and execution over HTTP for external MCP clients.
+
+**Endpoints**:
+- `GET /mcp/tools` — list tool schemas
+- `POST /mcp` — JSON-RPC 2.0 (`tools/list`, `tools/call`)
+- `GET /mcp/sse` — server-sent events for tool activity
+
+**Run locally**:
+```bash
+cd backend
+python mcp_server.py --port 5002
+```
+
+**JSON-RPC example**:
+```json
+{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {
+        "name": "weather",
+        "arguments": {"entity": "London"},
+        "original_prompt": "What is the weather in London?"
+    }
+}
+```
 
 ---
 
 ## Tool Registry
+
+Tool schemas and handlers live in [backend/tools/mcp_registry.py](backend/tools/mcp_registry.py) and are exposed via the MCP server `GET /mcp/tools` endpoint.
 
 ### Available Tools
 
@@ -82,14 +122,14 @@ This document explains how Model Context Protocol (MCP) tools are configured, re
 |------|-----|-------------|----------|
 | **Stock Price** | Yahoo Finance | Current price, change, volume | "AAPL stock price" |
 | **Stock Analysis** | Yahoo Finance Charts | 30-day trends, forecasts | "AAPL forecast next quarter" |
-| **Weather** | wttr.in | Current conditions, forecast | "weather in London" |
+| **Weather** | Open-Meteo | Current conditions, forecast | "weather in London" |
 | **Wikipedia** | Wikimedia REST API | Article summaries | "What is RAG?" |
 | **Web Search** | DuckDuckGo Instant | Quick answers, facts | "Who is OpenText CEO?" |
 | **Dictionary** | Free Dictionary API | Word definitions, phonetics | "define ephemeral" |
 | **Calculator** | Sandboxed eval | Math expressions | "calculate 45 * 23" |
 | **Unit Converter** | Built-in formulas | Length conversions | "100 km to miles" |
-| **World Clock** | Timezone offsets | Current time by location | "time in Tokyo" |
-| **Currency** | exchangerate.host | Exchange rates | "USD to EUR" |
+| **World Clock** | Built-in offsets | Current time by location | "time in Tokyo" |
+| **Currency** | Exchange Rate API | Exchange rates | "USD to EUR" |
 
 ### No API Keys Required
 
@@ -111,7 +151,7 @@ This document explains how Model Context Protocol (MCP) tools are configured, re
 ## Tool Implementations
 
 ### 1. Stock Price Tool
-**Location**: [orchestrator.py#L559-L595](backend/core/orchestrator.py#L559-L595)
+**Location**: [backend/tools/mcp_tools.py](backend/tools/mcp_tools.py)
 
 ```python
 def tool_stock_price(query: str) -> str | None:
@@ -156,7 +196,7 @@ tool_stock_price("AAPL")
 ```
 
 ### 2. Stock Analysis Tool (Forecast Support)
-**Location**: [orchestrator.py#L887-L945](backend/core/orchestrator.py#L887-L945)
+**Location**: [backend/tools/mcp_tools.py](backend/tools/mcp_tools.py)
 
 ```python
 def tool_stock_analysis(query: str) -> str | None:
@@ -234,38 +274,35 @@ tool_stock_analysis("OTEX forecast")
 ```
 
 ### 3. Weather Tool
-**Location**: [orchestrator.py#L598-L632](backend/core/orchestrator.py#L598-L632)
+**Location**: [backend/tools/mcp_tools.py](backend/tools/mcp_tools.py)
 
 ```python
 def tool_weather(location: str) -> str | None:
-    """Fetch weather from wttr.in (no key needed)."""
-    if ";" in location or "|" in location:
-        locations = [l.strip() for l in re.split(r"[;|]", location) if l.strip()]
-        outputs = [tool_weather(loc) for loc in locations]
-        return " | ".join(outputs)
-    
-    data = _http_get(f"https://wttr.in/{location.replace(' ', '_')}?format=j1")
-    if not data:
+    """Fetch real weather from Open-Meteo (free, no key)."""
+    geo = _http_get(
+        f"https://geocoding-api.open-meteo.com/v1/search?name={location}&count=1&language=en"
+    )
+    if not geo or not geo.get("results"):
         return None
-    
-    curr = (data.get("current_condition") or [{}])[0]
-    temp_c = curr.get("temp_C", "?")
-    temp_f = curr.get("temp_F", "?")
-    feels_c = curr.get("FeelsLikeC", "?")
-    feels_f = curr.get("FeelsLikeF", "?")
-    desc = curr.get("weatherDesc", [{}])[0].get("value", "Unknown")
-    humidity = curr.get("humidity", "?")
-    wind_kph = curr.get("windspeedKmph", "?")
-    wind_mph = curr.get("windspeedMiles", "?")
-    precip = curr.get("precipMM", "0")
-    
+    loc = geo["results"][0]
+    lat, lon = loc["latitude"], loc["longitude"]
+    weather = _http_get(
+        f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
+        f"&current=temperature_2m,relative_humidity_2m,apparent_temperature,"
+        f"weather_code,wind_speed_10m"
+        f"&daily=temperature_2m_max,temperature_2m_min&timezone=auto&forecast_days=3"
+    )
+    if not weather or "current" not in weather:
+        return None
+    cur = weather["current"]
+    temp_f = cur["temperature_2m"] * 9 / 5 + 32
+    feels_f = cur["apparent_temperature"] * 9 / 5 + 32
     return (
-        f"Weather in {location}: {desc} | "
-        f"Temp: {temp_c}°C ({temp_f}°F) | "
-        f"Feels like: {feels_c}°C ({feels_f}°F) | "
-        f"Humidity: {humidity}% | "
-        f"Wind: {wind_kph} km/h ({wind_mph} mph) | "
-        f"Precip: {precip}mm"
+        f"Weather in {loc.get('name', location)}, {loc.get('country', '')}: "
+        f"{cur['temperature_2m']}°C ({temp_f:.0f}°F) | "
+        f"Feels like {cur['apparent_temperature']}°C ({feels_f:.0f}°F) | "
+        f"Humidity {cur['relative_humidity_2m']}% | "
+        f"Wind {cur['wind_speed_10m']} km/h"
     )
 ```
 
@@ -278,7 +315,7 @@ tool_weather("London; Paris; Tokyo")
 ```
 
 ### 4. Wikipedia Tool
-**Location**: [orchestrator.py#L635-L662](backend/core/orchestrator.py#L635-L662)
+**Location**: [backend/tools/mcp_tools.py](backend/tools/mcp_tools.py)
 
 ```python
 def tool_wikipedia(topic: str) -> str | None:
@@ -308,12 +345,12 @@ def tool_wikipedia(topic: str) -> str | None:
 ```
 
 **Guard Rails** (Time-Sensitive Blocking):
-**Location**: [orchestrator.py#L2471-L2488](backend/core/orchestrator.py#L2471-L2488)
+**Location**: [backend/tools/mcp_tools.py](backend/tools/mcp_tools.py)
 
 Wikipedia is blocked for queries with "current", "latest", "recent" keywords:
 
 ```python
-def _execute_tool_call(tool_name: str, entity: str, original_prompt: str = None) -> str | None:
+def execute_tool_call(tool_name: str, entity: str, original_prompt: str = None) -> str | None:
     # ═══ GUARD RAIL: Prevent Wikipedia for time-sensitive queries ═══
     if tool_name == "wikipedia" and original_prompt:
         has_time_sensitive = bool(
@@ -333,7 +370,7 @@ def _execute_tool_call(tool_name: str, entity: str, original_prompt: str = None)
 - Solution: Use web search instead for fresh data
 
 ### 5. Web Search Tool
-**Location**: [orchestrator.py#L825-L885](backend/core/orchestrator.py#L825-L885)
+**Location**: [backend/tools/mcp_tools.py](backend/tools/mcp_tools.py)
 
 ```python
 def tool_web_search(query: str) -> str | None:
@@ -371,7 +408,7 @@ def tool_web_search(query: str) -> str | None:
 ```
 
 **Query Normalization** for Leadership Queries:
-**Location**: [orchestrator.py#L765-L783](backend/core/orchestrator.py#L765-L783)
+**Location**: [backend/tools/mcp_tools.py](backend/tools/mcp_tools.py)
 
 ```python
 def _normalize_web_search_query(query: str) -> str:
@@ -396,7 +433,7 @@ Normalized: "OpenText CEO current latest site:opentext.com OR site:investors.ope
 ```
 
 ### 6. Dictionary Tool
-**Location**: [orchestrator.py#L665-L682](backend/core/orchestrator.py#L665-L682)
+**Location**: [backend/tools/mcp_tools.py](backend/tools/mcp_tools.py)
 
 ```python
 def tool_dictionary(word: str) -> str | None:
@@ -425,7 +462,7 @@ tool_dictionary("ephemeral")
 ```
 
 ### 7. Calculator Tool
-**Location**: [orchestrator.py#L685-L706](backend/core/orchestrator.py#L685-L706)
+**Location**: [backend/tools/mcp_tools.py](backend/tools/mcp_tools.py)
 
 ```python
 def tool_calculator(expr: str) -> str | None:
@@ -463,11 +500,11 @@ tool_calculator("45 * 23 + 100; sqrt(144)")
 
 ### 8-10. Other Tools
 
-**Unit Converter** ([lines 709-748](backend/core/orchestrator.py#L709-L748)): Length conversions (mm, cm, m, km, in, ft, mi)
+**Unit Converter** ([backend/tools/mcp_tools.py](backend/tools/mcp_tools.py)): Length conversions (mm, cm, m, km, in, ft, mi)
 
-**World Clock** ([lines 947-1001](backend/core/orchestrator.py#L947-L1001)): Timezone lookup with 50+ cities
+**World Clock** ([backend/tools/mcp_tools.py](backend/tools/mcp_tools.py)): Built-in timezone offset map with 50+ cities
 
-**Currency Converter** ([lines 1004-1127](backend/core/orchestrator.py#L1004-L1127)): 35+ currencies with live exchange rates
+**Currency Converter** ([backend/tools/mcp_tools.py](backend/tools/mcp_tools.py)): Exchange Rate API with offline fallback rates
 
 ---
 
@@ -586,13 +623,13 @@ def run_tools(prompt: str) -> list[str]:
 
 ## Tool Execution Engine
 
-### _execute_tool_call() Function
-**Location**: [orchestrator.py#L2471-L2610](backend/core/orchestrator.py#L2471-L2610)
+### execute_tool_call() Function
+**Location**: [backend/tools/mcp_tools.py](backend/tools/mcp_tools.py)
 
 Executes a single tool call with error handling and entity cleaning:
 
 ```python
-def _execute_tool_call(tool_name: str, entity: str, original_prompt: str = None) -> str | None:
+def execute_tool_call(tool_name: str, entity: str, original_prompt: str = None) -> str | None:
     """
     Execute a tool call with the given entity.
     Handles multi-entity queries (semicolon/pipe separated).
@@ -808,7 +845,24 @@ def tool_news(topic: str) -> str | None:
     return " | ".join(headlines) if headlines else None
 ```
 
-### Step 2: Add Pattern Matching in run_tools()
+### Step 2: Register the Tool Schema
+
+Add the schema and handler in [backend/tools/mcp_registry.py](backend/tools/mcp_registry.py):
+
+```python
+"news": {
+    "name": "news",
+    "description": "Latest headlines for a topic.",
+    "input_schema": {
+        "type": "object",
+        "properties": {"entity": {"type": "string"}},
+        "required": ["entity"],
+    },
+    "handler": tool_news,
+},
+```
+
+### Step 3: Add Pattern Matching in run_tools()
 
 ```python
 def run_tools(prompt: str) -> list[str]:
@@ -833,20 +887,20 @@ def run_tools(prompt: str) -> list[str]:
     return results
 ```
 
-### Step 3: Add Tool Execution Handler
+### Step 4: Add Tool Execution Handler
 
 ```python
-def _execute_tool_call(tool_name: str, entity: str, original_prompt: str = None) -> str | None:
+def execute_tool_call(tool_name: str, entity: str, original_prompt: str = None) -> str | None:
     # ... existing tool mappings ...
     
-    elif tool_name == "news":
+    if tool_name == "news":
         r = tool_news(entity)
         return f"Tool [News]: {r}" if r else None
     
     # ... rest of mappings ...
 ```
 
-### Step 4: Update Tool Registry Documentation
+### Step 5: Update Tool Registry Documentation
 
 Add to the tool registry table and document the API used.
 
@@ -858,7 +912,7 @@ Add to the tool registry table and document the API used.
 
 ```bash
 cd backend
-python -c "from core.orchestrator import tool_stock_price; print(tool_stock_price('AAPL'))"
+python -c "from tools.mcp_tools import tool_stock_price; print(tool_stock_price('AAPL'))"
 ```
 
 Output:
@@ -899,6 +953,18 @@ Response:
   ],
   "final_response": "Apple Inc. (AAPL) is currently trading at $185.92 on NASDAQ, up $2.34 (+1.27%) with a volume of 54,321,890 shares."
 }
+```
+
+### Test via MCP Server
+
+```bash
+curl http://localhost:5002/mcp/tools
+```
+
+```bash
+curl -X POST http://localhost:5002/mcp \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"stock_price","arguments":{"entity":"AAPL"},"original_prompt":"AAPL stock price"}}'
 ```
 
 ### Enable Verbose Logging

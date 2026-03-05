@@ -10,6 +10,9 @@ This will start:
 - ✅ **Frontend (Vite)** on port 5173
 - ✅ **Backend (FastAPI/LangGraph)** on port 5001
 
+Optional:
+- ✅ **MCP Server (HTTP/SSE)** on port 5002 (run separately if needed)
+
 ## Access Your Application
 
 ### **Main Application URL:**
@@ -48,6 +51,12 @@ Open this URL in your browser. The frontend will automatically make API requests
    .venv\Scripts\python.exe -m pip install -r requirements.txt
    ```
 3. Restart: `npm start`
+
+### "Need MCP server for external clients"
+```powershell
+cd backend
+python mcp_server.py --port 5002
+```
 
 ### "Connection refused on localhost:5001"
 - Make sure backend is running: `cd backend && python main.py`

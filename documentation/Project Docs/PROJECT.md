@@ -60,6 +60,11 @@ Backend API (FastAPI):
 - GET /api/health
 - GET /api/graph
 
+MCP Server (optional, HTTP/SSE):
+- GET /mcp/tools
+- POST /mcp (JSON-RPC: tools/list, tools/call)
+- GET /mcp/sse
+
 Note: Human approval endpoints exist in code but the UI flow is fully autonomous.
 
 ## LLM Routing
